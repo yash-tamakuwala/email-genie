@@ -250,7 +250,7 @@ export async function getOrCreateLabel(
   // List existing labels
   const labelsResponse = await gmail.users.labels.list({ userId: "me" });
   const existingLabel = labelsResponse.data.labels?.find(
-    (label) => label.name === labelName
+    (label) => label.name?.toLowerCase() === labelName.toLowerCase()
   );
   
   if (existingLabel?.id) {
@@ -258,16 +258,34 @@ export async function getOrCreateLabel(
   }
   
   // Create new label
-  const createResponse = await gmail.users.labels.create({
-    userId: "me",
-    requestBody: {
-      name: labelName,
-      labelListVisibility: "labelShow",
-      messageListVisibility: "show",
-    },
-  });
-  
-  return createResponse.data.id || "";
+  try {
+    const createResponse = await gmail.users.labels.create({
+      userId: "me",
+      requestBody: {
+        name: labelName,
+        labelListVisibility: "labelShow",
+        messageListVisibility: "show",
+      },
+    });
+    
+    return createResponse.data.id || "";
+  } catch (error: any) {
+    // If creation fails due to conflict, try to find the label again
+    // This handles race conditions or case-sensitivity issues
+    if (error.message?.includes("Label name exists") || error.message?.includes("conflicts")) {
+      const retryLabelsResponse = await gmail.users.labels.list({ userId: "me" });
+      const conflictingLabel = retryLabelsResponse.data.labels?.find(
+        (label) => label.name?.toLowerCase() === labelName.toLowerCase()
+      );
+      
+      if (conflictingLabel?.id) {
+        return conflictingLabel.id;
+      }
+    }
+    
+    // Re-throw if it's a different error or label still not found
+    throw error;
+  }
 }
 
 // List available labels
