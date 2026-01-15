@@ -82,7 +82,6 @@ export async function POST(request: NextRequest) {
     }
 
     // Get categorization rules for this account (global rules filtered by accountId)
-    const { SINGLE_USER_ID } = await import("@/lib/auth");
     const rules = await listCategorizationRules(SINGLE_USER_ID, accountId);
 
     // Categorize email using AI

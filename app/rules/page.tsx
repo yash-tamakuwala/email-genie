@@ -184,8 +184,13 @@ export default function GlobalRulesPage() {
     setShowTemplates(true);
   };
 
-  const handleTemplateSelect = (template: RuleDraft) => {
-    setTemplateData(template);
+  const handleTemplateSelect = (template: Omit<RuleDraft, "accountIds" | "enabled">) => {
+    // Add default accountIds and enabled fields for the template
+    setTemplateData({
+      ...template,
+      accountIds: [], // User will select accounts in the builder
+      enabled: true,
+    });
     setShowTemplates(false);
     setShowBuilder(true);
   };
@@ -299,9 +304,13 @@ export default function GlobalRulesPage() {
             </CardHeader>
             <CardContent>
               <RuleTemplate
-                onSelect={handleTemplateSelect}
-                onCancel={() => setShowTemplates(false)}
+                onSelectTemplate={handleTemplateSelect}
               />
+              <div className="mt-4 flex justify-end">
+                <Button variant="outline" onClick={() => setShowTemplates(false)}>
+                  Cancel
+                </Button>
+              </div>
             </CardContent>
           </Card>
         )}
