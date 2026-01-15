@@ -7,7 +7,7 @@ import {
 } from "@/lib/dynamodb";
 import { pollAccountForEmails } from "@/lib/email-poller";
 import { generateEmailId, SINGLE_USER_ID } from "@/lib/auth";
-import { applyLabels, archiveMessage, getOrCreateLabel, markImportant } from "@/lib/gmail";
+import { applyLabels, archiveMessage, getOrCreateLabel, markImportant, markReadAndMoveToLabel } from "@/lib/gmail";
 
 export interface JobRunSummary {
   startedAt: string;
@@ -75,7 +75,22 @@ export async function runEmailProcessingJob(): Promise<JobRunSummary> {
               appliedActions.push("archived");
             }
 
-            if (categorization.suggestedLabels.length > 0) {
+            if (categorization.shouldMarkReadAndLabel && categorization.suggestedLabels.length > 0) {
+              const labelIds: string[] = [];
+              for (const labelName of categorization.suggestedLabels) {
+                const labelId = await getOrCreateLabel(
+                  accessToken,
+                  refreshToken,
+                  labelName
+                );
+                labelIds.push(labelId);
+              }
+
+              if (labelIds.length > 0) {
+                await markReadAndMoveToLabel(accessToken, refreshToken, email.messageId, labelIds);
+                appliedActions.push(`marked_read_and_labeled:${categorization.suggestedLabels.join(",")}`);
+              }
+            } else if (categorization.suggestedLabels.length > 0) {
               const labelIds: string[] = [];
               for (const labelName of categorization.suggestedLabels) {
                 const labelId = await getOrCreateLabel(
@@ -99,6 +114,8 @@ export async function runEmailProcessingJob(): Promise<JobRunSummary> {
               emailId,
               sender: email.from,
               subject: email.subject,
+              body: email.body,
+              snippet: email.snippet,
               appliedActions,
               ruleMatched: categorization.reasoning,
               categorization: JSON.stringify(categorization),

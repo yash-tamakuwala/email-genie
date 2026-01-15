@@ -7,6 +7,7 @@ export const CategorizationResultSchema = z.object({
   shouldMarkImportant: z.boolean().describe("Whether the email should be marked as important/starred"),
   shouldPinConversation: z.boolean().describe("Whether the conversation should be pinned"),
   shouldSkipInbox: z.boolean().describe("Whether the email should skip the inbox (be archived)"),
+  shouldMarkReadAndLabel: z.boolean().describe("Whether the email should be marked as read and moved to a label without archiving (keeps it searchable)"),
   suggestedLabels: z.array(z.string()).describe("Suggested custom labels to apply"),
   reasoning: z.string().describe("Brief explanation of the categorization decision"),
   confidence: z.number().min(0).max(1).describe("Confidence score of the categorization (0-1)"),
@@ -30,7 +31,8 @@ Available actions:
 1. Mark as important (star the email)
 2. Pin conversation
 3. Skip inbox (archive the email)
-4. Apply custom labels
+4. Mark as read and move to label (keeps email searchable, doesn't archive)
+5. Apply custom labels
 
 User's rules (in priority order):
 `;
@@ -58,6 +60,7 @@ User's rules (in priority order):
     if (rule.actions.markImportant) prompt += "\n   - Mark as important";
     if (rule.actions.pinConversation) prompt += "\n   - Pin conversation";
     if (rule.actions.skipInbox) prompt += "\n   - Skip inbox";
+    if (rule.actions.markReadAndLabel) prompt += "\n   - Mark as read and move to label";
     if (rule.actions.applyLabels?.length) {
       prompt += `\n   - Apply labels: ${rule.actions.applyLabels.join(", ")}`;
     }
@@ -88,6 +91,7 @@ export async function categorizeEmail(
       shouldMarkImportant: false,
       shouldPinConversation: false,
       shouldSkipInbox: false,
+      shouldMarkReadAndLabel: false,
       suggestedLabels: [],
       reasoning: "No active rules configured",
       confidence: 1.0,
@@ -136,6 +140,7 @@ function fallbackCategorization(
     shouldMarkImportant: false,
     shouldPinConversation: false,
     shouldSkipInbox: false,
+    shouldMarkReadAndLabel: false,
     suggestedLabels: [],
     reasoning: "Rule-based categorization (AI unavailable)",
     confidence: 0.7,
@@ -200,6 +205,9 @@ function fallbackCategorization(
       }
       if (rule.actions.skipInbox) {
         result.shouldSkipInbox = true;
+      }
+      if (rule.actions.markReadAndLabel) {
+        result.shouldMarkReadAndLabel = true;
       }
       if (rule.actions.applyLabels?.length) {
         result.suggestedLabels.push(...rule.actions.applyLabels);

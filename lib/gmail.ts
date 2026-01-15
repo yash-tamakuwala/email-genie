@@ -210,6 +210,15 @@ export async function markImportant(
   await applyLabels(accessToken, refreshToken, messageId, ["STARRED"]);
 }
 
+// Mark message as read
+export async function markAsRead(
+  accessToken: string,
+  refreshToken: string,
+  messageId: string
+) {
+  await applyLabels(accessToken, refreshToken, messageId, [], ["UNREAD"]);
+}
+
 // Archive message (remove from inbox)
 export async function archiveMessage(
   accessToken: string,
@@ -217,6 +226,17 @@ export async function archiveMessage(
   messageId: string
 ) {
   await applyLabels(accessToken, refreshToken, messageId, [], ["INBOX"]);
+}
+
+// Mark as read and move to label (without archiving)
+export async function markReadAndMoveToLabel(
+  accessToken: string,
+  refreshToken: string,
+  messageId: string,
+  labelIds: string[]
+) {
+  // Mark as read by removing UNREAD label
+  await applyLabels(accessToken, refreshToken, messageId, labelIds, ["UNREAD"]);
 }
 
 // Get or create custom label

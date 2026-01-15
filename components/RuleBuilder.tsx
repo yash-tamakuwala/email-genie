@@ -23,6 +23,7 @@ interface RuleActions {
   markImportant?: boolean;
   pinConversation?: boolean;
   skipInbox?: boolean;
+  markReadAndLabel?: boolean;
   applyLabels?: string[];
 }
 
@@ -67,6 +68,7 @@ export default function RuleBuilder({ accounts, initialRule, onSave, onCancel }:
       markImportant: initialRule?.actions?.markImportant || false,
       pinConversation: initialRule?.actions?.pinConversation || false,
       skipInbox: initialRule?.actions?.skipInbox || false,
+      markReadAndLabel: initialRule?.actions?.markReadAndLabel || false,
       applyLabels: initialRule?.actions?.applyLabels?.join(", ") || "",
     },
     aiPrompt: initialRule?.aiPrompt || "",
@@ -107,6 +109,7 @@ export default function RuleBuilder({ accounts, initialRule, onSave, onCancel }:
       ruleData.actions.markImportant ||
       ruleData.actions.pinConversation ||
       ruleData.actions.skipInbox ||
+      ruleData.actions.markReadAndLabel ||
       (ruleData.actions.applyLabels && ruleData.actions.applyLabels.trim().length > 0);
 
     if (!hasActions) {
@@ -139,6 +142,7 @@ export default function RuleBuilder({ accounts, initialRule, onSave, onCancel }:
         markImportant: ruleData.actions.markImportant,
         pinConversation: ruleData.actions.pinConversation,
         skipInbox: ruleData.actions.skipInbox,
+        markReadAndLabel: ruleData.actions.markReadAndLabel,
         applyLabels: ruleData.actions.applyLabels
           ? ruleData.actions.applyLabels.split(",").map((s) => s.trim()).filter(Boolean)
           : undefined,
@@ -406,6 +410,20 @@ export default function RuleBuilder({ accounts, initialRule, onSave, onCancel }:
               }
             />
             <Label htmlFor="skipInbox">📭 Skip inbox (Archive)</Label>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <Switch
+              id="markReadAndLabel"
+              checked={ruleData.actions.markReadAndLabel}
+              onCheckedChange={(checked) =>
+                setRuleData({
+                  ...ruleData,
+                  actions: { ...ruleData.actions, markReadAndLabel: checked },
+                })
+              }
+            />
+            <Label htmlFor="markReadAndLabel">👁️ Mark as read & move to label (keep in inbox for search)</Label>
           </div>
 
           <div>

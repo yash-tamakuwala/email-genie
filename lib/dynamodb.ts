@@ -62,6 +62,7 @@ export interface CategorizationRule {
     markImportant?: boolean;
     pinConversation?: boolean;
     skipInbox?: boolean;
+    markReadAndLabel?: boolean;
     applyLabels?: string[];
   };
   aiPrompt?: string;
@@ -79,6 +80,8 @@ export interface EmailLog {
   emailId: string;
   sender: string;
   subject: string;
+  body?: string; // Email body or snippet
+  snippet?: string; // Email snippet
   appliedActions: string[];
   ruleMatched?: string;
   categorization?: string;

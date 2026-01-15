@@ -14,8 +14,12 @@ GOOGLE_CLIENT_ID=your-google-client-id
 GOOGLE_CLIENT_SECRET=your-google-client-secret
 GOOGLE_REDIRECT_URI=http://localhost:3000/api/gmail/callback
 
-# Background Job Configuration (optional)
+# Background Job Configuration (REQUIRED for production)
 CRON_SECRET=your-cron-secret
+
+# Basic Auth Configuration (REQUIRED for production)
+BASIC_AUTH_USER=your-username
+BASIC_AUTH_PASSWORD=your-secure-password
 
 # Vercel AI Gateway Configuration
 AI_GATEWAY_API_KEY=your-ai-gateway-api-key
@@ -39,4 +43,11 @@ API_SECRET_KEY=your-api-secret-key
    - No gateway URL needed - the AI SDK handles routing automatically
 4. **NextAuth Secret**: Generate a random string using: `openssl rand -base64 32`
 5. **API Secret Key**: Generate another random string for API security
-6. **Cron Secret (optional)**: Protect the job endpoint if desired
+6. **Cron Secret (REQUIRED)**: Generate a secret to protect the cron job endpoint: `openssl rand -base64 32`
+7. **Basic Auth (REQUIRED)**: Set a username and strong password to protect the web interface
+
+## Security Notes
+
+- **Basic Auth**: Protects the entire web application with HTTP Basic Authentication
+- **Cron Secret**: Protects the `/api/jobs/process-emails` endpoint from unauthorized access
+- Both should be set in production to secure your application

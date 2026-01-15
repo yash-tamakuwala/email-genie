@@ -185,9 +185,11 @@ function DashboardContent() {
                   🧭 Job Monitor
                 </Button>
               </Link>
-              <Button className="w-full justify-start" variant="outline" disabled>
-                📊 View Activity Logs
-              </Button>
+              <Link href="/logs">
+                <Button className="w-full justify-start" variant="outline">
+                  📊 View Activity Logs
+                </Button>
+              </Link>
               <Button className="w-full justify-start" variant="outline" disabled>
                 🔔 Notification Settings
               </Button>
