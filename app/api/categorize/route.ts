@@ -63,7 +63,6 @@ export async function POST(request: NextRequest) {
     const refreshToken = account.refreshToken;
 
     if (isTokenExpired(account.tokenExpiry)) {
-      console.log("Access token expired, refreshing...");
       const newTokens = await refreshAccessToken(account.refreshToken);
       
       if (newTokens.access_token) {

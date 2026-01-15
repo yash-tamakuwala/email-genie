@@ -4,6 +4,7 @@ import { isTokenExpired } from "@/lib/auth";
 
 const DEFAULT_LOOKBACK_MS = 10 * 60 * 1000; // 10 minutes
 const OVERLAP_MS = 30 * 1000; // 30 seconds to avoid missing edge cases
+const MAX_ACCESS_TOKEN_TTL_MS = 2 * 60 * 60 * 1000; // Guard against bad expiry timestamps
 
 export interface PolledEmail {
   accountId: string;
@@ -25,7 +26,13 @@ async function ensureValidTokens(account: GmailAccount): Promise<{
   accessToken: string;
   refreshToken: string;
 }> {
-  if (!isTokenExpired(account.tokenExpiry)) {
+  const now = Date.now();
+  const expiryIsPlausible =
+    Number.isFinite(account.tokenExpiry) &&
+    account.tokenExpiry > 0 &&
+    account.tokenExpiry - now <= MAX_ACCESS_TOKEN_TTL_MS;
+
+  if (expiryIsPlausible && !isTokenExpired(account.tokenExpiry)) {
     return { accessToken: account.accessToken, refreshToken: account.refreshToken };
   }
 

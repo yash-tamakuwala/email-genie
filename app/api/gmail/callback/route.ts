@@ -46,8 +46,8 @@ export async function GET(request: NextRequest) {
     // Get user email
     const email = await getUserEmail(tokens.access_token);
     
-    // Calculate token expiry
-    const expiryTime = Date.now() + (tokens.expiry_date || 3600 * 1000);
+    // Calculate token expiry (expiry_date is an absolute timestamp when present)
+    const expiryTime = tokens.expiry_date ?? Date.now() + 3600 * 1000;
     
     // Store account in database
     const accountId = generateAccountId();
