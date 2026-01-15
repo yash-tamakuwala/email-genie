@@ -7,6 +7,13 @@ function isAuthorized(request: NextRequest): boolean {
     return true;
   }
 
+  // Check for Vercel's cron authorization header
+  const authHeader = request.headers.get("authorization");
+  if (authHeader === `Bearer ${secret}`) {
+    return true;
+  }
+
+  // Also support custom header and URL param for manual testing
   const headerSecret = request.headers.get("x-cron-secret");
   const urlSecret = request.nextUrl.searchParams.get("secret");
   return headerSecret === secret || urlSecret === secret;
