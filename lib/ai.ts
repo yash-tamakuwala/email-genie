@@ -72,9 +72,131 @@ User's rules (in priority order):
     prompt += "\n";
   });
 
-  prompt += `\nAnalyze the email and determine which actions should be applied based on the rules above. Consider both explicit conditions and the semantic meaning of the email content.`;
+  prompt += `\nAnalyze the email and determine which actions should be applied based on the rules above.
+Only apply actions when the email matches at least one rule's conditions.
+If no rule conditions match, return no actions (all booleans false, empty labels) and explain that no rules matched.
+When multiple rules match, apply actions only from the highest-priority (earliest listed) rule.
+Do not invent labels or actions beyond what the matching rule specifies.`;
 
   return prompt;
+}
+
+function extractSenderDetails(from: string) {
+  const normalizedFrom = from.toLowerCase();
+  const senderEmailMatch = normalizedFrom.match(/<(.+?)>/);
+  const senderEmail = senderEmailMatch ? senderEmailMatch[1] : normalizedFrom;
+  const senderDomain = senderEmail.split("@")[1] || "";
+
+  return { senderEmail, senderDomain };
+}
+
+function ruleHasConditions(rule: CategorizationRule) {
+  const conditions = rule.conditions;
+  if (!conditions) return false;
+
+  return Boolean(
+    (conditions.senderEmail && conditions.senderEmail.length > 0) ||
+      (conditions.senderDomain && conditions.senderDomain.length > 0) ||
+      (conditions.subjectContains && conditions.subjectContains.length > 0) ||
+      (conditions.bodyContains && conditions.bodyContains.length > 0)
+  );
+}
+
+function findMatchingRule(
+  email: EmailData,
+  rules: CategorizationRule[]
+): CategorizationRule | null {
+  const emailLower = {
+    from: email.from.toLowerCase(),
+    subject: email.subject.toLowerCase(),
+    body: email.body.toLowerCase(),
+  };
+
+  const { senderEmail, senderDomain } = extractSenderDetails(email.from);
+
+  for (const rule of rules) {
+    if (!ruleHasConditions(rule)) {
+      continue;
+    }
+
+    let matches = false;
+    const conditions = rule.conditions;
+
+    if (conditions?.senderEmail?.length) {
+      const senderMatches = conditions.senderEmail.some((ruleEmail) =>
+        senderEmail.includes(ruleEmail.toLowerCase())
+      );
+      if (senderMatches) matches = true;
+    }
+
+    if (conditions?.senderDomain?.length) {
+      const domainMatches = conditions.senderDomain.some((domain) =>
+        senderDomain.includes(domain.toLowerCase())
+      );
+      if (domainMatches) matches = true;
+    }
+
+    if (conditions?.subjectContains?.length) {
+      const subjectMatches = conditions.subjectContains.some((keyword) =>
+        emailLower.subject.includes(keyword.toLowerCase())
+      );
+      if (subjectMatches) matches = true;
+    }
+
+    if (conditions?.bodyContains?.length) {
+      const bodyMatches = conditions.bodyContains.some((keyword) =>
+        emailLower.body.includes(keyword.toLowerCase())
+      );
+      if (bodyMatches) matches = true;
+    }
+
+    if (matches) {
+      return rule;
+    }
+  }
+
+  return null;
+}
+
+function applyRuleConstraints(
+  categorization: CategorizationResult,
+  matchedRule: CategorizationRule | null
+): CategorizationResult {
+  if (!matchedRule) {
+    return {
+      shouldMarkImportant: false,
+      shouldPinConversation: false,
+      shouldSkipInbox: false,
+      shouldMarkReadAndLabel: false,
+      suggestedLabels: [],
+      reasoning: "No rule conditions matched",
+      confidence: 1.0,
+    };
+  }
+
+  const allowedLabels = new Set(
+    matchedRule.actions.applyLabels?.map((label) => label.toLowerCase()) ?? []
+  );
+
+  return {
+    ...categorization,
+    shouldMarkImportant:
+      Boolean(categorization.shouldMarkImportant) &&
+      Boolean(matchedRule.actions.markImportant),
+    shouldPinConversation:
+      Boolean(categorization.shouldPinConversation) &&
+      Boolean(matchedRule.actions.pinConversation),
+    shouldSkipInbox:
+      Boolean(categorization.shouldSkipInbox) &&
+      Boolean(matchedRule.actions.skipInbox),
+    shouldMarkReadAndLabel:
+      Boolean(categorization.shouldMarkReadAndLabel) &&
+      Boolean(matchedRule.actions.markReadAndLabel),
+    suggestedLabels: categorization.suggestedLabels.filter((label) =>
+      allowedLabels.has(label.toLowerCase())
+    ),
+    reasoning: matchedRule.name ? `Matched rule: ${matchedRule.name}` : categorization.reasoning,
+  };
 }
 
 // Categorize email using AI
@@ -122,7 +244,8 @@ Based on the rules, what actions should be applied to this email?`;
       temperature: 0.3,
     });
 
-    return result.object;
+    const matchedRule = findMatchingRule(email, enabledRules);
+    return applyRuleConstraints(result.object, matchedRule);
   } catch (error) {
     console.error("Error categorizing email with AI:", error);
     
@@ -146,79 +269,31 @@ function fallbackCategorization(
     confidence: 0.7,
   };
 
-  const emailLower = {
-    from: email.from.toLowerCase(),
-    subject: email.subject.toLowerCase(),
-    body: email.body.toLowerCase(),
-  };
+  const matchedRule = findMatchingRule(email, rules);
 
-  // Extract sender email and domain
-  const senderEmailMatch = email.from.match(/<(.+?)>/);
-  const senderEmail = senderEmailMatch ? senderEmailMatch[1].toLowerCase() : emailLower.from;
-  const senderDomain = senderEmail.split("@")[1] || "";
-
-  // Apply rules in priority order
-  for (const rule of rules) {
-    let matches = false;
-
-    if (rule.conditions) {
-      // Check sender email
-      if (rule.conditions.senderEmail?.length) {
-        const senderMatches = rule.conditions.senderEmail.some(
-          (email) => senderEmail.includes(email.toLowerCase())
-        );
-        if (senderMatches) matches = true;
-      }
-
-      // Check sender domain
-      if (rule.conditions.senderDomain?.length) {
-        const domainMatches = rule.conditions.senderDomain.some(
-          (domain) => senderDomain.includes(domain.toLowerCase())
-        );
-        if (domainMatches) matches = true;
-      }
-
-      // Check subject contains
-      if (rule.conditions.subjectContains?.length) {
-        const subjectMatches = rule.conditions.subjectContains.some(
-          (keyword) => emailLower.subject.includes(keyword.toLowerCase())
-        );
-        if (subjectMatches) matches = true;
-      }
-
-      // Check body contains
-      if (rule.conditions.bodyContains?.length) {
-        const bodyMatches = rule.conditions.bodyContains.some(
-          (keyword) => emailLower.body.includes(keyword.toLowerCase())
-        );
-        if (bodyMatches) matches = true;
-      }
-    }
-
-    // Apply actions if rule matches
-    if (matches || rule.type === "AI") {
-      if (rule.actions.markImportant) {
-        result.shouldMarkImportant = true;
-      }
-      if (rule.actions.pinConversation) {
-        result.shouldPinConversation = true;
-      }
-      if (rule.actions.skipInbox) {
-        result.shouldSkipInbox = true;
-      }
-      if (rule.actions.markReadAndLabel) {
-        result.shouldMarkReadAndLabel = true;
-      }
-      if (rule.actions.applyLabels?.length) {
-        result.suggestedLabels.push(...rule.actions.applyLabels);
-      }
-
-      if (matches) {
-        result.reasoning = `Matched rule: ${rule.name}`;
-        break; // Apply first matching rule
-      }
-    }
+  if (!matchedRule) {
+    result.reasoning = "No rule conditions matched";
+    result.confidence = 1.0;
+    return result;
   }
+
+  if (matchedRule.actions.markImportant) {
+    result.shouldMarkImportant = true;
+  }
+  if (matchedRule.actions.pinConversation) {
+    result.shouldPinConversation = true;
+  }
+  if (matchedRule.actions.skipInbox) {
+    result.shouldSkipInbox = true;
+  }
+  if (matchedRule.actions.markReadAndLabel) {
+    result.shouldMarkReadAndLabel = true;
+  }
+  if (matchedRule.actions.applyLabels?.length) {
+    result.suggestedLabels.push(...matchedRule.actions.applyLabels);
+  }
+
+  result.reasoning = `Matched rule: ${matchedRule.name}`;
 
   // Remove duplicate labels
   result.suggestedLabels = [...new Set(result.suggestedLabels)];
