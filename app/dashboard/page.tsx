@@ -180,6 +180,13 @@ function DashboardContent() {
                   </Button>
                 </Link>
               )}
+              {accounts.length > 0 && (
+                <Link href="/test">
+                  <Button className="w-full justify-start" variant="outline">
+                    🧪 Test Categorization
+                  </Button>
+                </Link>
+              )}
               <Link href="/jobs">
                 <Button className="w-full justify-start" variant="outline">
                   🧭 Job Monitor
