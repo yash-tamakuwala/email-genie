@@ -115,6 +115,8 @@ function findMatchingRule(
   const { senderEmail, senderDomain } = extractSenderDetails(email.from);
 
   for (const rule of rules) {
+    // AI-only rules (no hard conditions) — skip condition matching,
+    // these are evaluated by the AI model instead
     if (!ruleHasConditions(rule)) {
       continue;
     }
@@ -245,6 +247,18 @@ Based on the rules, what actions should be applied to this email?`;
     });
 
     const matchedRule = findMatchingRule(email, enabledRules);
+    
+    // If no hard-condition rule matched, check if there are AI-only rules.
+    // If so, trust the AI's categorization since the AI evaluated those rules.
+    const hasAiOnlyRules = enabledRules.some(
+      (rule) => !ruleHasConditions(rule) && (rule.type === "AI" || rule.aiPrompt)
+    );
+    
+    if (!matchedRule && hasAiOnlyRules) {
+      // AI made its decision based on AI-only rules — return as-is
+      return result.object;
+    }
+    
     return applyRuleConstraints(result.object, matchedRule);
   } catch (error) {
     console.error("Error categorizing email with AI:", error);
