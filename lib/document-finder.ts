@@ -21,12 +21,18 @@ export interface DocumentSearchResult {
   attachments: AttachmentInfo[];
   confidence: number;
   reasoning: string;
+  matchedQuery: string;
+}
+
+export interface QueryDetail {
+  query: string;
+  gmailQuery: string;
+  resultCount: number;
 }
 
 export interface DocumentSearchSummary {
-  query: string;
-  gmailQuery: string;
-  gmailQueryReasoning: string;
+  queries: string[];
+  queryDetails: QueryDetail[];
   results: DocumentSearchResult[];
   totalEmailsScanned: number;
 }
@@ -34,48 +40,66 @@ export interface DocumentSearchSummary {
 const BATCH_SIZE = 5; // Messages to fetch in parallel
 const RANK_BATCH_SIZE = 20; // Emails to rank per AI call
 
-// Search connected Gmail accounts for documents matching a natural language query
+// Search connected Gmail accounts for documents matching multiple queries
 export async function findDocuments(
-  query: string,
+  queries: string[],
   accountIds: string[],
   dateFrom: string,
   dateTo: string
 ): Promise<DocumentSearchSummary> {
-  // Step 1: Translate natural language to Gmail query
-  const { gmailQuery, reasoning: gmailQueryReasoning } =
-    await buildGmailSearchQuery(query, dateFrom, dateTo);
-
   const allResults: DocumentSearchResult[] = [];
+  const queryDetails: QueryDetail[] = [];
   let totalEmailsScanned = 0;
+  const seenMessageIds = new Set<string>();
 
-  // Step 2: Search each account
-  for (const accountId of accountIds) {
-    const account = await getGmailAccount(SINGLE_USER_ID, accountId);
-    if (!account) continue;
+  // Process each query independently
+  for (const query of queries) {
+    const { gmailQuery } = await buildGmailSearchQuery(query, dateFrom, dateTo);
 
-    try {
-      const accountResults = await searchAccountForDocuments(
-        account,
-        gmailQuery,
-        query
-      );
-      totalEmailsScanned += accountResults.scanned;
-      allResults.push(...accountResults.results);
-    } catch (error) {
-      console.error(
-        `Error searching account ${accountId} for documents:`,
-        error
-      );
+    let queryResultCount = 0;
+
+    for (const accountId of accountIds) {
+      const account = await getGmailAccount(SINGLE_USER_ID, accountId);
+      if (!account) continue;
+
+      try {
+        const accountResults = await searchAccountForDocuments(
+          account,
+          gmailQuery,
+          query
+        );
+        totalEmailsScanned += accountResults.scanned;
+
+        // Deduplicate across queries by messageId
+        for (const result of accountResults.results) {
+          const key = `${result.accountId}:${result.messageId}`;
+          if (!seenMessageIds.has(key)) {
+            seenMessageIds.add(key);
+            allResults.push({ ...result, matchedQuery: query });
+            queryResultCount++;
+          }
+        }
+      } catch (error) {
+        console.error(
+          `Error searching account ${accountId} for "${query}":`,
+          error
+        );
+      }
     }
+
+    queryDetails.push({
+      query,
+      gmailQuery,
+      resultCount: queryResultCount,
+    });
   }
 
   // Sort by confidence descending
   allResults.sort((a, b) => b.confidence - a.confidence);
 
   return {
-    query,
-    gmailQuery,
-    gmailQueryReasoning,
+    queries,
+    queryDetails,
     results: allResults,
     totalEmailsScanned,
   };
@@ -176,6 +200,7 @@ async function searchAccountForDocuments(
         attachments: email.attachments,
         confidence: rank.confidence,
         reasoning: rank.reasoning,
+        matchedQuery: originalQuery,
       });
     }
   }

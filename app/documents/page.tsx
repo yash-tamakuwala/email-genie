@@ -33,6 +33,7 @@ interface SearchResult {
   attachments: AttachmentInfo[];
   confidence: number;
   reasoning: string;
+  matchedQuery?: string;
 }
 
 interface Account {
@@ -43,7 +44,7 @@ interface Account {
 type PageState = "idle" | "searching" | "results" | "downloading" | "error";
 
 export default function DocumentsPage() {
-  const [query, setQuery] = useState("");
+  const [queries, setQueries] = useState<string[]>([""]);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -55,10 +56,14 @@ export default function DocumentsPage() {
   >(new Set());
   const [error, setError] = useState<string | null>(null);
   const [searchMeta, setSearchMeta] = useState<{
-    gmailQuery: string;
-    gmailQueryReasoning: string;
     totalEmailsScanned: number;
+    queryDetails: Array<{
+      query: string;
+      gmailQuery: string;
+      resultCount: number;
+    }>;
   } | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   // Fetch accounts on mount
   useEffect(() => {
@@ -85,30 +90,48 @@ export default function DocumentsPage() {
     setDateFrom(threeMonthsAgo.toISOString().split("T")[0]);
   }, []);
 
-  const toggleAccount = useCallback(
-    (accountId: string) => {
-      setSelectedAccountIds((prev) =>
-        prev.includes(accountId)
-          ? prev.filter((id) => id !== accountId)
-          : [...prev, accountId]
-      );
-    },
-    []
-  );
+  const toggleAccount = useCallback((accountId: string) => {
+    setSelectedAccountIds((prev) =>
+      prev.includes(accountId)
+        ? prev.filter((id) => id !== accountId)
+        : [...prev, accountId]
+    );
+  }, []);
+
+  // Multi-query management
+  const updateQuery = (index: number, value: string) => {
+    setQueries((prev) => {
+      const next = [...prev];
+      next[index] = value;
+      return next;
+    });
+  };
+
+  const addQuery = () => {
+    setQueries((prev) => [...prev, ""]);
+  };
+
+  const removeQuery = (index: number) => {
+    if (queries.length <= 1) return;
+    setQueries((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const nonEmptyQueries = queries.filter((q) => q.trim());
 
   const handleSearch = async () => {
-    if (!query.trim()) return;
+    if (nonEmptyQueries.length === 0) return;
     setPageState("searching");
     setError(null);
     setResults([]);
     setSelectedAttachments(new Set());
+    setSearchMeta(null);
 
     try {
       const res = await fetch("/api/documents/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          query: query.trim(),
+          queries: nonEmptyQueries,
           accountIds:
             selectedAccountIds.length === accounts.length
               ? undefined
@@ -122,9 +145,8 @@ export default function DocumentsPage() {
       if (data.success) {
         setResults(data.results);
         setSearchMeta({
-          gmailQuery: data.gmailQuery,
-          gmailQueryReasoning: data.gmailQueryReasoning,
           totalEmailsScanned: data.totalEmailsScanned,
+          queryDetails: data.queryDetails,
         });
         setPageState("results");
       } else {
@@ -162,17 +184,40 @@ export default function DocumentsPage() {
 
   const deselectAll = () => setSelectedAttachments(new Set());
 
-  const handleDownloadSingle = (
+  const handleDownloadSingle = async (
     accountId: string,
     messageId: string,
-    attachmentId: string
+    attachmentId: string,
+    filename: string
   ) => {
-    const params = new URLSearchParams({
-      accountId,
-      messageId,
-      attachmentId,
-    });
-    window.open(`/api/documents/download?${params}`, "_blank");
+    const key = `${accountId}:${messageId}:${attachmentId}`;
+    setDownloadingId(key);
+    try {
+      const params = new URLSearchParams({
+        accountId,
+        messageId,
+        attachmentId,
+      });
+      const res = await fetch(`/api/documents/download?${params}`);
+
+      if (!res.ok) {
+        throw new Error("Download failed");
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Download failed");
+    } finally {
+      setDownloadingId(null);
+    }
   };
 
   const handleDownloadZip = async () => {
@@ -255,20 +300,57 @@ export default function DocumentsPage() {
           <CardHeader>
             <CardTitle>Search Documents</CardTitle>
             <CardDescription>
-              Describe what you&apos;re looking for in plain language
+              Add one or more document types to search for
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            {/* Multi-query inputs */}
             <div>
-              <Label htmlFor="query">What are you looking for?</Label>
-              <Input
-                id="query"
-                placeholder="e.g., HDFC bank statements, Facebook invoices, electricity bills..."
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-                className="mt-1"
-              />
+              <Label>What are you looking for?</Label>
+              <div className="space-y-2 mt-1">
+                {queries.map((q, idx) => (
+                  <div key={idx} className="flex gap-2">
+                    <Input
+                      placeholder={
+                        idx === 0
+                          ? "e.g., HDFC bank statements"
+                          : idx === 1
+                            ? "e.g., Facebook invoices"
+                            : "e.g., electricity bills"
+                      }
+                      value={q}
+                      onChange={(e) => updateQuery(idx, e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          if (e.shiftKey || e.metaKey) {
+                            addQuery();
+                          } else {
+                            handleSearch();
+                          }
+                        }
+                      }}
+                    />
+                    {queries.length > 1 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="shrink-0 px-2 text-gray-400 hover:text-red-500"
+                        onClick={() => removeQuery(idx)}
+                      >
+                        ✕
+                      </Button>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-2"
+                onClick={addQuery}
+              >
+                + Add another document type
+              </Button>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
@@ -319,11 +401,16 @@ export default function DocumentsPage() {
             <Button
               onClick={handleSearch}
               disabled={
-                !query.trim() || pageState === "searching" || !dateFrom || !dateTo
+                nonEmptyQueries.length === 0 ||
+                pageState === "searching" ||
+                !dateFrom ||
+                !dateTo
               }
               className="w-full"
             >
-              {pageState === "searching" ? "Searching..." : "Search"}
+              {pageState === "searching"
+                ? "Searching..."
+                : `Search${nonEmptyQueries.length > 1 ? ` (${nonEmptyQueries.length} types)` : ""}`}
             </Button>
           </CardContent>
         </Card>
@@ -346,7 +433,9 @@ export default function DocumentsPage() {
                 Searching your emails with AI...
               </p>
               <p className="text-sm text-gray-500 mt-1">
-                This may take a moment
+                {nonEmptyQueries.length > 1
+                  ? `Searching for ${nonEmptyQueries.length} document types — this may take a moment`
+                  : "This may take a moment"}
               </p>
             </CardContent>
           </Card>
@@ -357,15 +446,23 @@ export default function DocumentsPage() {
           <>
             {/* Search meta */}
             {searchMeta && (
-              <div className="mb-4 text-sm text-gray-500">
+              <div className="mb-4 text-sm text-gray-500 space-y-1">
                 <p>
                   Scanned {searchMeta.totalEmailsScanned} emails &middot;{" "}
                   {results.length} relevant result
                   {results.length !== 1 ? "s" : ""} found
                 </p>
-                <p className="text-xs mt-1">
-                  Gmail query: <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">{searchMeta.gmailQuery}</code>
-                </p>
+                {searchMeta.queryDetails.map((qd, i) => (
+                  <p key={i} className="text-xs">
+                    <Badge variant="outline" className="mr-1 text-xs">
+                      {qd.query}
+                    </Badge>
+                    {qd.resultCount} result{qd.resultCount !== 1 ? "s" : ""}{" "}
+                    <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded ml-1">
+                      {qd.gmailQuery}
+                    </code>
+                  </p>
+                ))}
               </div>
             )}
 
@@ -414,6 +511,11 @@ export default function DocumentsPage() {
                               <p className="font-medium truncate">
                                 {result.subject}
                               </p>
+                              {result.matchedQuery && (
+                                <Badge variant="secondary" className="shrink-0 text-xs">
+                                  {result.matchedQuery}
+                                </Badge>
+                              )}
                               <Badge
                                 variant={
                                   result.confidence >= 0.8
@@ -443,6 +545,7 @@ export default function DocumentsPage() {
                                 const key = attKey(result, att);
                                 const isSelected =
                                   selectedAttachments.has(key);
+                                const isDownloading = downloadingId === key;
                                 return (
                                   <div
                                     key={att.attachmentId}
@@ -471,16 +574,18 @@ export default function DocumentsPage() {
                                     <Button
                                       size="sm"
                                       variant="ghost"
+                                      disabled={isDownloading}
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         handleDownloadSingle(
                                           result.accountId,
                                           result.messageId,
-                                          att.attachmentId
+                                          att.attachmentId,
+                                          att.filename
                                         );
                                       }}
                                     >
-                                      Download
+                                      {isDownloading ? "..." : "Download"}
                                     </Button>
                                   </div>
                                 );

@@ -6,11 +6,21 @@ import { SINGLE_USER_ID } from "@/lib/auth";
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { query, accountIds, dateFrom, dateTo } = body;
+    const { queries, query, accountIds, dateFrom, dateTo } = body;
 
-    if (!query || !dateFrom || !dateTo) {
+    // Support both single `query` and multiple `queries`
+    const queryList: string[] = queries
+      ? (queries as string[]).filter((q: string) => q.trim())
+      : query
+        ? [query]
+        : [];
+
+    if (queryList.length === 0 || !dateFrom || !dateTo) {
       return NextResponse.json(
-        { success: false, error: "query, dateFrom, and dateTo are required" },
+        {
+          success: false,
+          error: "At least one query, dateFrom, and dateTo are required",
+        },
         { status: 400 }
       );
     }
@@ -30,7 +40,7 @@ export async function POST(request: NextRequest) {
     }
 
     const summary = await findDocuments(
-      query,
+      queryList,
       targetAccountIds,
       dateFrom,
       dateTo
