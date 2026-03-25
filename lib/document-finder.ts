@@ -22,6 +22,7 @@ export interface DocumentSearchResult {
   confidence: number;
   reasoning: string;
   matchedQuery: string;
+  passwordHint: string | null;
 }
 
 export interface QueryDetail {
@@ -129,6 +130,7 @@ async function searchAccountForDocuments(
     sender: string;
     date: string;
     snippet: string;
+    body: string;
     attachments: AttachmentInfo[];
   }> = [];
 
@@ -156,6 +158,7 @@ async function searchAccountForDocuments(
           sender: msg.from,
           date: msg.date,
           snippet: msg.snippet,
+          body: msg.body,
           attachments: msg.attachments,
         });
       }
@@ -176,6 +179,7 @@ async function searchAccountForDocuments(
       subject: e.subject,
       sender: e.sender,
       snippet: e.snippet,
+      body: e.body,
       attachmentFilenames: e.attachments.map((a) => a.filename),
     }));
 
@@ -201,6 +205,7 @@ async function searchAccountForDocuments(
         confidence: rank.confidence,
         reasoning: rank.reasoning,
         matchedQuery: originalQuery,
+        passwordHint: rank.passwordHint ?? null,
       });
     }
   }

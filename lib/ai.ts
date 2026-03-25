@@ -285,6 +285,12 @@ const DocumentRelevanceSchema = z.object({
       relevant: z.boolean().describe("Whether this email contains the requested document type"),
       confidence: z.number().min(0).max(1).describe("Confidence score"),
       reasoning: z.string().describe("Brief explanation"),
+      passwordHint: z
+        .string()
+        .nullable()
+        .describe(
+          "If the email body mentions a password to open the attachment (e.g. 'Password is your DOB in DDMMYYYY format', 'Password: first 4 letters of PAN + DOB'), extract the EXACT password instruction text. Return null if no password info is found."
+        ),
     })
   ),
 });
@@ -298,6 +304,7 @@ export async function rankDocumentRelevance(
     subject: string;
     sender: string;
     snippet: string;
+    body: string;
     attachmentFilenames: string[];
   }>,
   query: string
@@ -310,9 +317,9 @@ export async function rankDocumentRelevance(
     const emailSummaries = emails
       .map(
         (e) =>
-          `[${e.index}] From: ${e.sender} | Subject: ${e.subject} | Snippet: ${e.snippet} | Attachments: ${e.attachmentFilenames.join(", ") || "none"}`
+          `[${e.index}] From: ${e.sender} | Subject: ${e.subject} | Body: ${e.body.slice(0, 1000)} | Attachments: ${e.attachmentFilenames.join(", ") || "none"}`
       )
-      .join("\n");
+      .join("\n\n");
 
     const result = await generateObject({
       model: "openai/gpt-4o-mini",
@@ -322,13 +329,20 @@ Focus on:
 - Whether attachments are actual documents (PDFs, spreadsheets) vs images/signatures
 - Whether the email content matches the requested document type
 - Whether the sender is plausible for the document type
-- Ignore marketing emails, promotional content, and newsletters unless specifically requested`,
+- Ignore marketing emails, promotional content, and newsletters unless specifically requested
+
+IMPORTANT - Password detection:
+- Many financial documents (bank statements, credit card statements, tax documents) are password-protected PDFs
+- The email body often contains instructions on what the password is (e.g. "Password is your date of birth in DDMMYYYY format", "Password: first 4 letters of your PAN number followed by DOB", "Your statement is protected. Use your Customer ID as password")
+- Look for ANY mention of password, passcode, or how to open/unlock the attachment
+- Extract the EXACT password instruction verbatim from the email body — do not paraphrase
+- If no password instructions are found, set passwordHint to null`,
       prompt: `User is searching for: "${query}"
 
 Emails to evaluate:
 ${emailSummaries}
 
-Rate each email's relevance to the search query.`,
+Rate each email's relevance and extract any password hints for opening attachments.`,
       schema: DocumentRelevanceSchema,
       temperature: 0.2,
     });
@@ -342,6 +356,7 @@ Rate each email's relevance to the search query.`,
         relevant: true,
         confidence: 0.5,
         reasoning: "AI ranking unavailable, included by default",
+        passwordHint: null,
       })),
     };
   }

@@ -34,6 +34,7 @@ interface SearchResult {
   confidence: number;
   reasoning: string;
   matchedQuery?: string;
+  passwordHint?: string | null;
 }
 
 interface Account {
@@ -537,6 +538,23 @@ export default function DocumentsPage() {
                               <p className="text-xs text-gray-400 mt-1 italic">
                                 {result.reasoning}
                               </p>
+                            )}
+
+                            {/* Password hint */}
+                            {result.passwordHint && (
+                              <div className="mt-2 flex items-start gap-2 p-2 rounded bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700">
+                                <span className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5">
+                                  🔒
+                                </span>
+                                <div>
+                                  <p className="text-xs font-semibold text-amber-800 dark:text-amber-300">
+                                    Password Protected
+                                  </p>
+                                  <p className="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
+                                    {result.passwordHint}
+                                  </p>
+                                </div>
+                              </div>
                             )}
 
                             {/* Attachments */}
