@@ -22,7 +22,7 @@ export interface PollResult {
   refreshToken: string;
 }
 
-async function ensureValidTokens(account: GmailAccount): Promise<{
+export async function ensureValidTokens(account: GmailAccount): Promise<{
   accessToken: string;
   refreshToken: string;
 }> {
