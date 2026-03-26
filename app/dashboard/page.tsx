@@ -197,6 +197,11 @@ function DashboardContent() {
                   📊 View Activity Logs
                 </Button>
               </Link>
+              <Link href="/documents">
+                <Button className="w-full justify-start" variant="outline">
+                  📎 Find Documents
+                </Button>
+              </Link>
               <Button className="w-full justify-start" variant="outline" disabled>
                 🔔 Notification Settings
               </Button>

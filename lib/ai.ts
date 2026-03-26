@@ -314,3 +314,139 @@ function fallbackCategorization(
 
   return result;
 }
+
+// ─── Document Finder AI Functions ───
+
+// Schema for translating natural language to Gmail search query
+const GmailSearchQuerySchema = z.object({
+  gmailQuery: z.string().describe(
+    "Gmail search query optimized for finding the requested documents. MUST include 'has:attachment'. Use from:, subject:, OR operators as needed."
+  ),
+  reasoning: z.string().describe("Brief explanation of the search strategy"),
+});
+
+export type GmailSearchQuery = z.infer<typeof GmailSearchQuerySchema>;
+
+// Translate a natural language query into a Gmail search string
+export async function buildGmailSearchQuery(
+  naturalLanguageQuery: string,
+  dateFrom: string,
+  dateTo: string
+): Promise<GmailSearchQuery> {
+  try {
+    const result = await generateObject({
+      model: "openai/gpt-4o-mini",
+      system: `You are an expert at constructing Gmail search queries. Given a natural language description of documents to find, produce an optimized Gmail search query.
+
+Rules:
+- ALWAYS include "has:attachment" in the query
+- Use "after:YYYY/MM/DD" and "before:YYYY/MM/DD" for date filtering
+- Use from: for known sender domains (e.g. from:hdfcbank.net for HDFC)
+- Use subject:() for subject keywords
+- Use OR to combine alternative search strategies
+- Keep queries focused — avoid overly broad terms
+- For well-known companies, include their known email domains`,
+      prompt: `Find documents matching: "${naturalLanguageQuery}"
+Date range: ${dateFrom} to ${dateTo}
+
+Generate the optimal Gmail search query.`,
+      schema: GmailSearchQuerySchema,
+      temperature: 0.2,
+    });
+    return result.object;
+  } catch (error) {
+    console.error("Error building Gmail search query:", error);
+    // Fallback: simple keyword search
+    const afterDate = dateFrom.replace(/-/g, "/");
+    const beforeDate = dateTo.replace(/-/g, "/");
+    return {
+      gmailQuery: `has:attachment ${naturalLanguageQuery} after:${afterDate} before:${beforeDate}`,
+      reasoning: "Fallback: using raw query terms with attachment filter",
+    };
+  }
+}
+
+// Schema for ranking email relevance to a document search
+const DocumentRelevanceSchema = z.object({
+  rankings: z.array(
+    z.object({
+      index: z.number().describe("Index of the email in the input array"),
+      relevant: z.boolean().describe("Whether this email contains the requested document type"),
+      confidence: z.number().min(0).max(1).describe("Confidence score"),
+      reasoning: z.string().describe("Brief explanation"),
+      passwordHint: z
+        .string()
+        .nullable()
+        .describe(
+          "If the email body mentions a password to open the attachment (e.g. 'Password is your DOB in DDMMYYYY format', 'Password: first 4 letters of PAN + DOB'), extract the EXACT password instruction text. Return null if no password info is found."
+        ),
+    })
+  ),
+});
+
+export type DocumentRelevance = z.infer<typeof DocumentRelevanceSchema>;
+
+// Rank a batch of emails by relevance to the user's document search query
+export async function rankDocumentRelevance(
+  emails: Array<{
+    index: number;
+    subject: string;
+    sender: string;
+    snippet: string;
+    body: string;
+    attachmentFilenames: string[];
+  }>,
+  query: string
+): Promise<DocumentRelevance> {
+  if (emails.length === 0) {
+    return { rankings: [] };
+  }
+
+  try {
+    const emailSummaries = emails
+      .map(
+        (e) =>
+          `[${e.index}] From: ${e.sender} | Subject: ${e.subject} | Body: ${e.body.slice(0, 1000)} | Attachments: ${e.attachmentFilenames.join(", ") || "none"}`
+      )
+      .join("\n\n");
+
+    const result = await generateObject({
+      model: "openai/gpt-4o-mini",
+      system: `You are a document relevance classifier. Given a user's search query and a list of emails with attachment info, determine which emails are relevant to the user's request.
+
+Focus on:
+- Whether attachments are actual documents (PDFs, spreadsheets) vs images/signatures
+- Whether the email content matches the requested document type
+- Whether the sender is plausible for the document type
+- Ignore marketing emails, promotional content, and newsletters unless specifically requested
+
+IMPORTANT - Password detection:
+- Many financial documents (bank statements, credit card statements, tax documents) are password-protected PDFs
+- The email body often contains instructions on what the password is (e.g. "Password is your date of birth in DDMMYYYY format", "Password: first 4 letters of your PAN number followed by DOB", "Your statement is protected. Use your Customer ID as password")
+- Look for ANY mention of password, passcode, or how to open/unlock the attachment
+- Extract the EXACT password instruction verbatim from the email body — do not paraphrase
+- If no password instructions are found, set passwordHint to null`,
+      prompt: `User is searching for: "${query}"
+
+Emails to evaluate:
+${emailSummaries}
+
+Rate each email's relevance and extract any password hints for opening attachments.`,
+      schema: DocumentRelevanceSchema,
+      temperature: 0.2,
+    });
+    return result.object;
+  } catch (error) {
+    console.error("Error ranking document relevance:", error);
+    // Fallback: mark all as relevant with low confidence
+    return {
+      rankings: emails.map((e) => ({
+        index: e.index,
+        relevant: true,
+        confidence: 0.5,
+        reasoning: "AI ranking unavailable, included by default",
+        passwordHint: null,
+      })),
+    };
+  }
+}

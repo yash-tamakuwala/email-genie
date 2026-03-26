@@ -67,18 +67,33 @@ export async function getUserEmail(accessToken: string): Promise<string> {
 }
 
 // Gmail API operations
+export interface GmailMessagePart {
+  mimeType: string;
+  filename?: string;
+  body: { data?: string; attachmentId?: string; size?: number };
+  parts?: GmailMessagePart[];
+}
+
 export interface GmailMessage {
   id: string;
   threadId: string;
   snippet: string;
   payload: {
     headers: Array<{ name: string; value: string }>;
-    body?: { data?: string };
-    parts?: Array<{
-      mimeType: string;
-      body: { data?: string };
-    }>;
+    body?: { data?: string; attachmentId?: string; size?: number };
+    parts?: GmailMessagePart[];
   };
+}
+
+export interface AttachmentInfo {
+  attachmentId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+}
+
+export interface ParsedEmailWithAttachments extends ParsedEmail {
+  attachments: AttachmentInfo[];
 }
 
 export interface ParsedEmail {
@@ -300,4 +315,96 @@ export async function revokeToken(accessToken: string) {
   const oauth2Client = getOAuth2Client();
   oauth2Client.setCredentials({ access_token: accessToken });
   await oauth2Client.revokeCredentials();
+}
+
+// Extract attachment info from nested message parts
+function extractAttachments(parts: GmailMessagePart[]): AttachmentInfo[] {
+  const attachments: AttachmentInfo[] = [];
+  for (const part of parts) {
+    if (part.filename && part.body.attachmentId) {
+      attachments.push({
+        attachmentId: part.body.attachmentId,
+        filename: part.filename,
+        mimeType: part.mimeType,
+        size: part.body.size || 0,
+      });
+    }
+    if (part.parts) {
+      attachments.push(...extractAttachments(part.parts));
+    }
+  }
+  return attachments;
+}
+
+// Get message with attachment metadata
+export async function getMessageWithAttachmentInfo(
+  accessToken: string,
+  refreshToken: string,
+  messageId: string
+): Promise<ParsedEmailWithAttachments> {
+  const gmail = getGmailClient(accessToken, refreshToken);
+
+  const response = await gmail.users.messages.get({
+    userId: "me",
+    id: messageId,
+    format: "full",
+  });
+
+  const message = response.data as unknown as GmailMessage;
+  const parsed = parseEmail(message, response.data.labelIds || []);
+  const attachments = message.payload.parts
+    ? extractAttachments(message.payload.parts)
+    : [];
+
+  return { ...parsed, attachments };
+}
+
+// Download a single attachment by ID
+export async function downloadAttachment(
+  accessToken: string,
+  refreshToken: string,
+  messageId: string,
+  attachmentId: string
+): Promise<Buffer> {
+  const gmail = getGmailClient(accessToken, refreshToken);
+
+  const response = await gmail.users.messages.attachments.get({
+    userId: "me",
+    messageId,
+    id: attachmentId,
+  });
+
+  const data = response.data.data || "";
+  // Gmail returns base64url-encoded data
+  return Buffer.from(data, "base64url");
+}
+
+// Search messages with a raw Gmail query, with pagination
+export async function searchMessages(
+  accessToken: string,
+  refreshToken: string,
+  options: {
+    query: string;
+    maxResults?: number;
+  }
+): Promise<GmailMessageRef[]> {
+  const gmail = getGmailClient(accessToken, refreshToken);
+  const maxResults = options.maxResults || 50;
+  const allMessages: GmailMessageRef[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const response = await gmail.users.messages.list({
+      userId: "me",
+      q: options.query,
+      maxResults: Math.min(maxResults - allMessages.length, 100),
+      pageToken,
+    });
+
+    const messages = (response.data.messages || []) as GmailMessageRef[];
+    allMessages.push(...messages);
+    pageToken = response.data.nextPageToken || undefined;
+  } while (pageToken && allMessages.length < maxResults);
+
+  return allMessages;
 }
