@@ -8,7 +8,11 @@ export const CategorizationResultSchema = z.object({
   shouldPinConversation: z.boolean().describe("Whether the conversation should be pinned"),
   shouldSkipInbox: z.boolean().describe("Whether the email should skip the inbox (be archived)"),
   shouldMarkReadAndLabel: z.boolean().describe("Whether the email should be marked as read and moved to a label without archiving (keeps it searchable)"),
-  suggestedLabels: z.array(z.string()).describe("Suggested custom labels to apply"),
+  shouldBlockAndUnsubscribe: z.boolean().describe("Whether to block the sender and unsubscribe from their emails"),
+  suggestedLabels: z.array(z.string()).describe("Labels to apply from the user's defined rules only. Do not invent new labels."),
+  isFinancialDocument: z.boolean().describe("Whether this email contains or is a financial document such as an invoice, receipt, bank statement, credit card statement, tax document, or payment confirmation"),
+  financialDocumentType: z.enum(["invoice", "receipt", "bank_statement", "credit_card_statement", "tax_document", "payment_confirmation", "none"]).describe("The type of financial document, or 'none' if not a financial document"),
+  financialDocumentDescription: z.string().describe("A one-line human-readable description of the financial document including vendor/bank name, document type, date, and identifying details like card ending or account number. Empty string if not a financial document. Example: 'HDFC Bank credit card statement dated March 2026 for card ending 4521'"),
   reasoning: z.string().describe("Brief explanation of the categorization decision"),
   confidence: z.number().min(0).max(1).describe("Confidence score of the categorization (0-1)"),
 });
@@ -32,14 +36,15 @@ Available actions:
 2. Pin conversation
 3. Skip inbox (archive the email)
 4. Mark as read and move to label (keeps email searchable, doesn't archive)
-5. Apply custom labels
+5. Block sender and unsubscribe (blocks future emails and attempts to unsubscribe)
+6. Apply custom labels
 
 User's rules (in priority order):
 `;
 
   rules.forEach((rule, index) => {
     prompt += `\n${index + 1}. ${rule.name} (${rule.type}, priority: ${rule.priority})`;
-    
+
     if (rule.conditions) {
       prompt += "\n   Conditions:";
       if (rule.conditions.senderEmail?.length) {
@@ -55,28 +60,49 @@ User's rules (in priority order):
         prompt += `\n   - Body contains: ${rule.conditions.bodyContains.join(", ")}`;
       }
     }
-    
+
     prompt += "\n   Actions:";
     if (rule.actions.markImportant) prompt += "\n   - Mark as important";
     if (rule.actions.pinConversation) prompt += "\n   - Pin conversation";
     if (rule.actions.skipInbox) prompt += "\n   - Skip inbox";
     if (rule.actions.markReadAndLabel) prompt += "\n   - Mark as read and move to label";
+    if (rule.actions.blockAndUnsubscribe) prompt += "\n   - Block sender and unsubscribe";
     if (rule.actions.applyLabels?.length) {
       prompt += `\n   - Apply labels: ${rule.actions.applyLabels.join(", ")}`;
     }
-    
+
     if (rule.aiPrompt) {
       prompt += `\n   AI Instructions: ${rule.aiPrompt}`;
     }
-    
+
     prompt += "\n";
   });
+
+  // Collect all valid labels from rules
+  const validLabels = new Set<string>();
+  rules.forEach((rule) => {
+    if (rule.actions.applyLabels?.length) {
+      rule.actions.applyLabels.forEach((label) => validLabels.add(label));
+    }
+  });
+
+  if (validLabels.size > 0) {
+    prompt += `\nAllowed labels (ONLY use these, do not invent new ones): ${[...validLabels].join(", ")}`;
+  } else {
+    prompt += `\nNo labels are defined in the rules. Do not suggest any labels.`;
+  }
 
   prompt += `\nAnalyze the email and determine which actions should be applied based on the rules above.
 Only apply actions when the email matches at least one rule's conditions.
 If no rule conditions match, return no actions (all booleans false, empty labels) and explain that no rules matched.
 When multiple rules match, apply actions only from the highest-priority (earliest listed) rule.
-Do not invent labels or actions beyond what the matching rule specifies.`;
+Do not invent labels or actions beyond what the matching rule specifies.
+
+IMPORTANT - Financial Document Detection (always-on, independent of rules):
+You MUST always analyze whether the email is a financial document (invoice, receipt, bank statement, credit card statement, tax document, or payment confirmation). Set isFinancialDocument, financialDocumentType, and financialDocumentDescription accordingly.
+- If it IS a financial document, set isFinancialDocument=true, financialDocumentType to the appropriate type, and financialDocumentDescription to a concise one-line summary including the vendor/bank name, document type, date, and any identifying details (e.g. card ending, account number last 4 digits).
+- If it is NOT a financial document, set isFinancialDocument=false, financialDocumentType="none", financialDocumentDescription="".
+This detection is independent of user-created rules and must always be performed.`;
 
   return prompt;
 }
@@ -166,10 +192,12 @@ function applyRuleConstraints(
 ): CategorizationResult {
   if (!matchedRule) {
     return {
+      ...categorization,
       shouldMarkImportant: false,
       shouldPinConversation: false,
       shouldSkipInbox: false,
       shouldMarkReadAndLabel: false,
+      shouldBlockAndUnsubscribe: false,
       suggestedLabels: [],
       reasoning: "No rule conditions matched",
       confidence: 1.0,
@@ -208,7 +236,7 @@ export async function categorizeEmail(
 ): Promise<CategorizationResult> {
   // Filter only enabled rules
   const enabledRules = rules.filter((rule) => rule.enabled);
-  
+
   if (enabledRules.length === 0) {
     // No rules, return default categorization
     return {
@@ -216,7 +244,11 @@ export async function categorizeEmail(
       shouldPinConversation: false,
       shouldSkipInbox: false,
       shouldMarkReadAndLabel: false,
+      shouldBlockAndUnsubscribe: false,
       suggestedLabels: [],
+      isFinancialDocument: false,
+      financialDocumentType: "none",
+      financialDocumentDescription: "",
       reasoning: "No active rules configured",
       confidence: 1.0,
     };
@@ -247,22 +279,22 @@ Based on the rules, what actions should be applied to this email?`;
     });
 
     const matchedRule = findMatchingRule(email, enabledRules);
-    
+
     // If no hard-condition rule matched, check if there are AI-only rules.
     // If so, trust the AI's categorization since the AI evaluated those rules.
     const hasAiOnlyRules = enabledRules.some(
       (rule) => !ruleHasConditions(rule) && (rule.type === "AI" || rule.aiPrompt)
     );
-    
+
     if (!matchedRule && hasAiOnlyRules) {
       // AI made its decision based on AI-only rules — return as-is
       return result.object;
     }
-    
+
     return applyRuleConstraints(result.object, matchedRule);
   } catch (error) {
     console.error("Error categorizing email with AI:", error);
-    
+
     // Fallback to rule-based categorization if AI fails
     return fallbackCategorization(email, enabledRules);
   }
@@ -278,7 +310,11 @@ function fallbackCategorization(
     shouldPinConversation: false,
     shouldSkipInbox: false,
     shouldMarkReadAndLabel: false,
+    shouldBlockAndUnsubscribe: false,
     suggestedLabels: [],
+    isFinancialDocument: false,
+    financialDocumentType: "none",
+    financialDocumentDescription: "",
     reasoning: "Rule-based categorization (AI unavailable)",
     confidence: 0.7,
   };
@@ -288,29 +324,62 @@ function fallbackCategorization(
   if (!matchedRule) {
     result.reasoning = "No rule conditions matched";
     result.confidence = 1.0;
-    return result;
+  } else {
+    if (matchedRule.actions.markImportant) {
+      result.shouldMarkImportant = true;
+    }
+    if (matchedRule.actions.pinConversation) {
+      result.shouldPinConversation = true;
+    }
+    if (matchedRule.actions.skipInbox) {
+      result.shouldSkipInbox = true;
+    }
+    if (matchedRule.actions.markReadAndLabel) {
+      result.shouldMarkReadAndLabel = true;
+    }
+    if (matchedRule.actions.blockAndUnsubscribe) {
+      result.shouldBlockAndUnsubscribe = true;
+    }
+    if (matchedRule.actions.applyLabels?.length) {
+      result.suggestedLabels.push(...matchedRule.actions.applyLabels);
+    }
+    result.reasoning = `Matched rule: ${matchedRule.name}`;
+    result.suggestedLabels = [...new Set(result.suggestedLabels)];
   }
 
-  if (matchedRule.actions.markImportant) {
-    result.shouldMarkImportant = true;
-  }
-  if (matchedRule.actions.pinConversation) {
-    result.shouldPinConversation = true;
-  }
-  if (matchedRule.actions.skipInbox) {
-    result.shouldSkipInbox = true;
-  }
-  if (matchedRule.actions.markReadAndLabel) {
-    result.shouldMarkReadAndLabel = true;
-  }
-  if (matchedRule.actions.applyLabels?.length) {
-    result.suggestedLabels.push(...matchedRule.actions.applyLabels);
-  }
+  // Fallback financial document detection (keyword-based, always-on)
+  const emailLower = {
+    subject: email.subject.toLowerCase(),
+    body: email.body.toLowerCase(),
+  };
+  const combined = `${emailLower.subject} ${emailLower.body}`;
+  const invoiceKeywords = ["invoice", "bill", "payment due", "amount due", "billing statement"];
+  const bankKeywords = ["bank statement", "account statement", "transaction summary", "account summary"];
+  const ccKeywords = ["credit card statement", "card statement", "card ending", "minimum payment", "statement balance"];
+  const receiptKeywords = ["receipt", "payment confirmation", "payment received", "order confirmation"];
+  const taxKeywords = ["tax return", "tax document", "form 1099", "form w-2", "tax statement"];
 
-  result.reasoning = `Matched rule: ${matchedRule.name}`;
-
-  // Remove duplicate labels
-  result.suggestedLabels = [...new Set(result.suggestedLabels)];
+  if (invoiceKeywords.some((kw) => combined.includes(kw))) {
+    result.isFinancialDocument = true;
+    result.financialDocumentType = "invoice";
+    result.financialDocumentDescription = `Invoice from ${email.from} - ${email.subject}`;
+  } else if (ccKeywords.some((kw) => combined.includes(kw))) {
+    result.isFinancialDocument = true;
+    result.financialDocumentType = "credit_card_statement";
+    result.financialDocumentDescription = `Credit card statement from ${email.from} - ${email.subject}`;
+  } else if (bankKeywords.some((kw) => combined.includes(kw))) {
+    result.isFinancialDocument = true;
+    result.financialDocumentType = "bank_statement";
+    result.financialDocumentDescription = `Bank statement from ${email.from} - ${email.subject}`;
+  } else if (receiptKeywords.some((kw) => combined.includes(kw))) {
+    result.isFinancialDocument = true;
+    result.financialDocumentType = "receipt";
+    result.financialDocumentDescription = `Receipt from ${email.from} - ${email.subject}`;
+  } else if (taxKeywords.some((kw) => combined.includes(kw))) {
+    result.isFinancialDocument = true;
+    result.financialDocumentType = "tax_document";
+    result.financialDocumentDescription = `Tax document from ${email.from} - ${email.subject}`;
+  }
 
   return result;
 }

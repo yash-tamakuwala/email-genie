@@ -4,10 +4,23 @@ import {
   listCategorizationRules,
   listGmailAccounts,
   setJobStatus,
+  createBlockedSender,
+  getBlockedSender,
 } from "@/lib/dynamodb";
 import { pollAccountForEmails } from "@/lib/email-poller";
 import { generateEmailId, SINGLE_USER_ID } from "@/lib/auth";
-import { applyLabels, archiveMessage, getOrCreateLabel, markImportant, markReadAndMoveToLabel } from "@/lib/gmail";
+import { processFinancialDocument } from "@/lib/financial-document-processor";
+import {
+  applyLabels,
+  archiveMessage, 
+  getOrCreateLabel, 
+  markImportant, 
+  markReadAndMoveToLabel,
+  getMessage,
+  extractUnsubscribeInfo,
+  processUnsubscribe,
+  createGmailFilter,
+} from "@/lib/gmail";
 
 export interface JobRunSummary {
   startedAt: string;
@@ -65,12 +78,111 @@ export async function runEmailProcessingJob(): Promise<JobRunSummary> {
 
             const appliedActions: string[] = [];
 
+            // Financial document auto-save (always-on, independent of rules)
+            if (categorization.isFinancialDocument && categorization.financialDocumentType !== "none") {
+              try {
+                const financialActions = await processFinancialDocument({
+                  accessToken,
+                  refreshToken,
+                  messageId: email.messageId,
+                  accountId: account.accountId,
+                  userId: SINGLE_USER_ID,
+                  emailFrom: email.from,
+                  emailSubject: email.subject,
+                  emailDate: new Date().toISOString(),
+                  financialDocumentType: categorization.financialDocumentType,
+                  description: categorization.financialDocumentDescription,
+                });
+                appliedActions.push(...financialActions);
+              } catch (financialError) {
+                console.error(
+                  `Error processing financial document for email ${email.messageId}:`,
+                  financialError
+                );
+                appliedActions.push(
+                  `financial_doc_error:${financialError instanceof Error ? financialError.message : "unknown"}`
+                );
+              }
+            }
+
+            // Handle block and unsubscribe action
+            if (categorization.shouldBlockAndUnsubscribe) {
+              try {
+                // Extract sender email
+                const senderEmailMatch = email.from.match(/<(.+?)>/);
+                const senderEmail = senderEmailMatch ? senderEmailMatch[1] : email.from;
+                const senderDomain = senderEmail.split("@")[1] || "";
+
+                // Check if already blocked
+                const existingBlock = await getBlockedSender(
+                  SINGLE_USER_ID,
+                  account.accountId,
+                  senderEmail
+                );
+
+                if (!existingBlock) {
+                  // Get full message to extract unsubscribe info
+                  const fullMessage = await getMessage(accessToken, refreshToken, email.messageId);
+                  const unsubscribeInfo = extractUnsubscribeInfo(fullMessage as any);
+
+                  // Attempt to unsubscribe
+                  const unsubscribeResult = await processUnsubscribe(unsubscribeInfo);
+                  
+                  // Create Gmail filter to block future emails
+                  const filterId = await createGmailFilter(
+                    accessToken,
+                    refreshToken,
+                    senderEmail,
+                    "archive"
+                  );
+
+                  // Find the rule that triggered this action
+                  const matchedRule = rules.find(r => 
+                    r.actions.blockAndUnsubscribe && r.enabled
+                  );
+
+                  // Store in blocked senders list
+                  await createBlockedSender({
+                    userId: SINGLE_USER_ID,
+                    accountId: account.accountId,
+                    senderEmail,
+                    senderDomain,
+                    blockedAt: new Date().toISOString(),
+                    ruleId: matchedRule?.ruleId,
+                    ruleName: matchedRule?.name,
+                    unsubscribeMethod: unsubscribeResult.success 
+                      ? unsubscribeResult.method 
+                      : `failed:${unsubscribeResult.method}`,
+                    gmailFilterId: filterId,
+                  });
+
+                  appliedActions.push(
+                    `blocked_sender:${senderEmail}`,
+                    `unsubscribe:${unsubscribeResult.success ? "success" : "failed"}`,
+                    `filter_created:${filterId}`
+                  );
+                } else {
+                  appliedActions.push(`already_blocked:${senderEmail}`);
+                }
+
+                // Archive the current email
+                await archiveMessage(accessToken, refreshToken, email.messageId);
+                appliedActions.push("archived");
+              } catch (blockError) {
+                console.error(
+                  `Error blocking sender for email ${email.messageId}:`,
+                  blockError
+                );
+                appliedActions.push(`block_error:${blockError instanceof Error ? blockError.message : "unknown"}`);
+              }
+            }
+
             if (categorization.shouldMarkImportant) {
               await markImportant(accessToken, refreshToken, email.messageId);
               appliedActions.push("marked_important");
             }
 
-            if (categorization.shouldSkipInbox) {
+            if (categorization.shouldSkipInbox && !categorization.shouldBlockAndUnsubscribe) {
               await archiveMessage(accessToken, refreshToken, email.messageId);
               appliedActions.push("archived");
             }

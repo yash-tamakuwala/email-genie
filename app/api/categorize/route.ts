@@ -3,6 +3,8 @@ import {
   getGmailAccount,
   listCategorizationRules,
   createEmailLog,
+  createBlockedSender,
+  getBlockedSender,
 } from "@/lib/dynamodb";
 import {
   refreshAccessToken,
@@ -10,6 +12,10 @@ import {
   archiveMessage,
   getOrCreateLabel,
   applyLabels,
+  getMessage,
+  extractUnsubscribeInfo,
+  processUnsubscribe,
+  createGmailFilter,
 } from "@/lib/gmail";
 import { categorizeEmail } from "@/lib/ai";
 import {
@@ -98,14 +104,86 @@ export async function POST(request: NextRequest) {
     const appliedActions: string[] = [];
 
     try {
+      // Handle block and unsubscribe action
+      if (categorization.shouldBlockAndUnsubscribe) {
+        try {
+          // Extract sender email
+          const senderEmailMatch = from.match(/<(.+?)>/);
+          const senderEmail = senderEmailMatch ? senderEmailMatch[1] : from;
+          const senderDomain = senderEmail.split("@")[1] || "";
+
+          // Check if already blocked
+          const existingBlock = await getBlockedSender(
+            SINGLE_USER_ID,
+            accountId,
+            senderEmail
+          );
+
+          if (!existingBlock) {
+            // Get full message to extract unsubscribe info
+            const fullMessage = await getMessage(accessToken, refreshToken, messageId);
+            const unsubscribeInfo = extractUnsubscribeInfo(fullMessage as any);
+
+            // Attempt to unsubscribe
+            const unsubscribeResult = await processUnsubscribe(unsubscribeInfo);
+            
+            // Create Gmail filter to block future emails
+            const filterId = await createGmailFilter(
+              accessToken,
+              refreshToken,
+              senderEmail,
+              "archive"
+            );
+
+            // Find the rule that triggered this action
+            const matchedRule = rules.find(r => 
+              r.actions.blockAndUnsubscribe && r.enabled
+            );
+
+            // Store in blocked senders list
+            await createBlockedSender({
+              userId: SINGLE_USER_ID,
+              accountId,
+              senderEmail,
+              senderDomain,
+              blockedAt: new Date().toISOString(),
+              ruleId: matchedRule?.ruleId,
+              ruleName: matchedRule?.name,
+              unsubscribeMethod: unsubscribeResult.success 
+                ? unsubscribeResult.method 
+                : `failed:${unsubscribeResult.method}`,
+              gmailFilterId: filterId,
+            });
+
+            appliedActions.push(
+              `blocked_sender:${senderEmail}`,
+              `unsubscribe:${unsubscribeResult.success ? "success" : "failed"}`,
+              `filter_created:${filterId}`
+            );
+          } else {
+            appliedActions.push(`already_blocked:${senderEmail}`);
+          }
+
+          // Archive the current email
+          await archiveMessage(accessToken, refreshToken, messageId);
+          appliedActions.push("archived");
+        } catch (blockError) {
+          console.error(
+            `Error blocking sender for email ${messageId}:`,
+            blockError
+          );
+          appliedActions.push(`block_error:${blockError instanceof Error ? blockError.message : "unknown"}`);
+        }
+      }
+
       // Mark as important
       if (categorization.shouldMarkImportant) {
         await markImportant(accessToken, refreshToken, messageId);
         appliedActions.push("marked_important");
       }
 
-      // Archive (skip inbox)
-      if (categorization.shouldSkipInbox) {
+      // Archive (skip inbox) - only if not already archived by block action
+      if (categorization.shouldSkipInbox && !categorization.shouldBlockAndUnsubscribe) {
         await archiveMessage(accessToken, refreshToken, messageId);
         appliedActions.push("archived");
       }

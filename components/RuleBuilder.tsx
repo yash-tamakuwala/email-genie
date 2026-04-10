@@ -25,6 +25,7 @@ interface RuleActions {
   skipInbox?: boolean;
   markReadAndLabel?: boolean;
   applyLabels?: string[];
+  blockAndUnsubscribe?: boolean;
 }
 
 interface GmailAccount {
@@ -70,6 +71,7 @@ export default function RuleBuilder({ accounts, initialRule, onSave, onCancel }:
       skipInbox: initialRule?.actions?.skipInbox || false,
       markReadAndLabel: initialRule?.actions?.markReadAndLabel || false,
       applyLabels: initialRule?.actions?.applyLabels?.join(", ") || "",
+      blockAndUnsubscribe: initialRule?.actions?.blockAndUnsubscribe || false,
     },
     aiPrompt: initialRule?.aiPrompt || "",
   });
@@ -110,6 +112,7 @@ export default function RuleBuilder({ accounts, initialRule, onSave, onCancel }:
       ruleData.actions.pinConversation ||
       ruleData.actions.skipInbox ||
       ruleData.actions.markReadAndLabel ||
+      ruleData.actions.blockAndUnsubscribe ||
       (ruleData.actions.applyLabels && ruleData.actions.applyLabels.trim().length > 0);
 
     if (!hasActions) {
@@ -143,6 +146,7 @@ export default function RuleBuilder({ accounts, initialRule, onSave, onCancel }:
         pinConversation: ruleData.actions.pinConversation,
         skipInbox: ruleData.actions.skipInbox,
         markReadAndLabel: ruleData.actions.markReadAndLabel,
+        blockAndUnsubscribe: ruleData.actions.blockAndUnsubscribe,
         applyLabels: ruleData.actions.applyLabels
           ? ruleData.actions.applyLabels.split(",").map((s) => s.trim()).filter(Boolean)
           : undefined,
@@ -425,6 +429,30 @@ export default function RuleBuilder({ accounts, initialRule, onSave, onCancel }:
             />
             <Label htmlFor="markReadAndLabel">👁️ Mark as read & move to label (keep in inbox for search)</Label>
           </div>
+
+          <div className="flex items-center space-x-2">
+            <Switch
+              id="blockAndUnsubscribe"
+              checked={ruleData.actions.blockAndUnsubscribe}
+              onCheckedChange={(checked) =>
+                setRuleData({
+                  ...ruleData,
+                  actions: { ...ruleData.actions, blockAndUnsubscribe: checked },
+                })
+              }
+            />
+            <Label htmlFor="blockAndUnsubscribe">🚫 Block sender and unsubscribe from emails like these</Label>
+          </div>
+          {ruleData.actions.blockAndUnsubscribe && (
+            <div className="ml-6 p-3 bg-yellow-50 border border-yellow-200 rounded text-sm text-yellow-800">
+              <p className="font-medium">⚠️ Warning: This will:</p>
+              <ul className="list-disc ml-4 mt-1 space-y-1">
+                <li>Automatically unsubscribe from the sender</li>
+                <li>Create a Gmail filter to block future emails from this sender</li>
+                <li>Archive/trash the current email</li>
+              </ul>
+            </div>
+          )}
 
           <div>
             <Label htmlFor="applyLabels">Apply Labels</Label>

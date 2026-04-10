@@ -85,6 +85,10 @@ export default function Home() {
               </li>
               <li className="flex items-start">
                 <span className="mr-2">✓</span>
+                <span><strong>Newsletter Blocking:</strong> Automatically block and unsubscribe from unwanted senders</span>
+              </li>
+              <li className="flex items-start">
+                <span className="mr-2">✓</span>
                 <span><strong>Rule Templates:</strong> Pre-built templates for common scenarios</span>
               </li>
               <li className="flex items-start">

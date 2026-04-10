@@ -11,7 +11,9 @@
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.968.0",
+    "@aws-sdk/client-s3": "^3.1028.0",
     "@aws-sdk/lib-dynamodb": "^3.968.0",
+    "@aws-sdk/s3-request-presigner": "^3.1028.0",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-dropdown-menu": "^2.1.16",
     "@radix-ui/react-label": "^2.1.8",

@@ -150,6 +150,76 @@ async function createEmailLogsTable() {
   console.log(`✓ TTL enabled on ${tableName}`);
 }
 
+async function createBlockedSendersTable() {
+  const tableName = `${TABLE_PREFIX}-blocked-senders`;
+
+  if (await tableExists(tableName)) {
+    console.log(`✓ Table ${tableName} already exists`);
+    return;
+  }
+
+  console.log(`Creating table ${tableName}...`);
+
+  await client.send(
+    new CreateTableCommand({
+      TableName: tableName,
+      KeySchema: [
+        { AttributeName: "pk", KeyType: "HASH" },
+        { AttributeName: "sk", KeyType: "RANGE" },
+      ],
+      AttributeDefinitions: [
+        { AttributeName: "pk", AttributeType: "S" },
+        { AttributeName: "sk", AttributeType: "S" },
+      ],
+      BillingMode: "PAY_PER_REQUEST",
+    })
+  );
+
+  console.log(`✓ Table ${tableName} created successfully`);
+}
+
+async function createFinancialAttachmentsTable() {
+  const tableName = `${TABLE_PREFIX}-financial-attachments`;
+
+  if (await tableExists(tableName)) {
+    console.log(`✓ Table ${tableName} already exists`);
+    return;
+  }
+
+  console.log(`Creating table ${tableName}...`);
+
+  await client.send(
+    new CreateTableCommand({
+      TableName: tableName,
+      KeySchema: [
+        { AttributeName: "pk", KeyType: "HASH" },
+        { AttributeName: "sk", KeyType: "RANGE" },
+      ],
+      AttributeDefinitions: [
+        { AttributeName: "pk", AttributeType: "S" },
+        { AttributeName: "sk", AttributeType: "S" },
+        { AttributeName: "gsi1pk", AttributeType: "S" },
+        { AttributeName: "gsi1sk", AttributeType: "S" },
+      ],
+      GlobalSecondaryIndexes: [
+        {
+          IndexName: "GSI1",
+          KeySchema: [
+            { AttributeName: "gsi1pk", KeyType: "HASH" },
+            { AttributeName: "gsi1sk", KeyType: "RANGE" },
+          ],
+          Projection: {
+            ProjectionType: "ALL",
+          },
+        },
+      ],
+      BillingMode: "PAY_PER_REQUEST",
+    })
+  );
+
+  console.log(`✓ Table ${tableName} created successfully`);
+}
+
 async function main() {
   console.log("Setting up DynamoDB tables...\n");
 
@@ -157,6 +227,8 @@ async function main() {
     await createGmailAccountsTable();
     await createCategorizationRulesTable();
     await createEmailLogsTable();
+    await createBlockedSendersTable();
+    await createFinancialAttachmentsTable();
 
     console.log("\n✓ All tables created successfully!");
     console.log("\nNote: Tables may take a few moments to become active.");

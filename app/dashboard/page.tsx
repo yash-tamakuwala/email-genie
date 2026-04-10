@@ -197,6 +197,16 @@ function DashboardContent() {
                   📊 View Activity Logs
                 </Button>
               </Link>
+              <Link href="/blocked-senders">
+                <Button className="w-full justify-start" variant="outline">
+                  🚫 Blocked Senders
+                </Button>
+              </Link>
+              <Link href="/documents">
+                <Button className="w-full justify-start" variant="outline">
+                  📄 Financial Documents
+                </Button>
+              </Link>
               <Button className="w-full justify-start" variant="outline" disabled>
                 🔔 Notification Settings
               </Button>

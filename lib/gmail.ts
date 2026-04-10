@@ -18,6 +18,7 @@ export function getAuthUrl(): string {
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.labels",
+    "https://www.googleapis.com/auth/gmail.settings.basic",
     "https://www.googleapis.com/auth/userinfo.email",
   ];
 
@@ -67,18 +68,29 @@ export async function getUserEmail(accessToken: string): Promise<string> {
 }
 
 // Gmail API operations
+export interface GmailMessagePart {
+  mimeType: string;
+  filename?: string;
+  body: { data?: string; attachmentId?: string; size?: number };
+  parts?: GmailMessagePart[];
+}
+
 export interface GmailMessage {
   id: string;
   threadId: string;
   snippet: string;
   payload: {
     headers: Array<{ name: string; value: string }>;
-    body?: { data?: string };
-    parts?: Array<{
-      mimeType: string;
-      body: { data?: string };
-    }>;
+    body?: { data?: string; attachmentId?: string; size?: number };
+    parts?: GmailMessagePart[];
   };
+}
+
+export interface AttachmentMetadata {
+  attachmentId: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
 }
 
 export interface ParsedEmail {
@@ -300,4 +312,259 @@ export async function revokeToken(accessToken: string) {
   const oauth2Client = getOAuth2Client();
   oauth2Client.setCredentials({ access_token: accessToken });
   await oauth2Client.revokeCredentials();
+}
+
+// Newsletter blocking and unsubscribe functions
+
+export interface UnsubscribeInfo {
+  method: "http" | "mailto" | "html" | "none";
+  url?: string;
+  email?: string;
+  oneClick?: boolean;
+}
+
+// Extract unsubscribe information from email message
+export function extractUnsubscribeInfo(message: GmailMessage): UnsubscribeInfo {
+  const headers = message.payload.headers;
+  
+  // Check for List-Unsubscribe header (RFC 2369)
+  const listUnsubscribe = headers.find(
+    (h) => h.name.toLowerCase() === "list-unsubscribe"
+  );
+  
+  if (listUnsubscribe?.value) {
+    const value = listUnsubscribe.value;
+    
+    // Check for HTTP/HTTPS URL
+    const httpMatch = value.match(/<(https?:\/\/[^>]+)>/);
+    if (httpMatch) {
+      // Check if it's a one-click unsubscribe (RFC 8058)
+      const listUnsubscribePost = headers.find(
+        (h) => h.name.toLowerCase() === "list-unsubscribe-post"
+      );
+      const oneClick = listUnsubscribePost?.value === "List-Unsubscribe=One-Click";
+      
+      return {
+        method: "http",
+        url: httpMatch[1],
+        oneClick,
+      };
+    }
+    
+    // Check for mailto
+    const mailtoMatch = value.match(/<mailto:([^>]+)>/);
+    if (mailtoMatch) {
+      return {
+        method: "mailto",
+        email: mailtoMatch[1],
+      };
+    }
+  }
+  
+  // Fallback: Parse HTML body for unsubscribe links
+  let body = "";
+  if (message.payload.body?.data) {
+    body = Buffer.from(message.payload.body.data, "base64").toString("utf-8");
+  } else if (message.payload.parts) {
+    const htmlPart = message.payload.parts.find((part) => part.mimeType === "text/html");
+    if (htmlPart?.body.data) {
+      body = Buffer.from(htmlPart.body.data, "base64").toString("utf-8");
+    }
+  }
+  
+  if (body) {
+    // Look for common unsubscribe link patterns
+    const unsubscribeRegex = /<a[^>]*href=["']([^"']*unsubscribe[^"']*)["'][^>]*>/i;
+    const match = body.match(unsubscribeRegex);
+    if (match) {
+      return {
+        method: "html",
+        url: match[1],
+      };
+    }
+  }
+  
+  return { method: "none" };
+}
+
+// Process unsubscribe request
+export async function processUnsubscribe(
+  unsubscribeInfo: UnsubscribeInfo
+): Promise<{ success: boolean; method: string; error?: string }> {
+  try {
+    if (unsubscribeInfo.method === "http" && unsubscribeInfo.url) {
+      // For one-click unsubscribe, send POST request
+      if (unsubscribeInfo.oneClick) {
+        const response = await fetch(unsubscribeInfo.url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: "List-Unsubscribe=One-Click",
+        });
+        
+        return {
+          success: response.ok,
+          method: "http-one-click",
+          error: response.ok ? undefined : `HTTP ${response.status}`,
+        };
+      } else {
+        // For regular HTTP unsubscribe, send GET request
+        const response = await fetch(unsubscribeInfo.url, {
+          method: "GET",
+        });
+        
+        return {
+          success: response.ok,
+          method: "http-get",
+          error: response.ok ? undefined : `HTTP ${response.status}`,
+        };
+      }
+    } else if (unsubscribeInfo.method === "mailto" && unsubscribeInfo.email) {
+      // For mailto, we can't automatically send email, just log it
+      return {
+        success: false,
+        method: "mailto",
+        error: "Mailto unsubscribe not supported (requires email client)",
+      };
+    } else if (unsubscribeInfo.method === "html" && unsubscribeInfo.url) {
+      // For HTML links, send GET request
+      const response = await fetch(unsubscribeInfo.url, {
+        method: "GET",
+      });
+      
+      return {
+        success: response.ok,
+        method: "html-link",
+        error: response.ok ? undefined : `HTTP ${response.status}`,
+      };
+    }
+    
+    return {
+      success: false,
+      method: "none",
+      error: "No unsubscribe method found",
+    };
+  } catch (error) {
+    return {
+      success: false,
+      method: unsubscribeInfo.method,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+// Create Gmail filter to block sender
+export async function createGmailFilter(
+  accessToken: string,
+  refreshToken: string,
+  senderEmail: string,
+  action: "trash" | "archive" = "archive"
+): Promise<string> {
+  const gmail = getGmailClient(accessToken, refreshToken);
+  
+  const response = await gmail.users.settings.filters.create({
+    userId: "me",
+    requestBody: {
+      criteria: {
+        from: senderEmail,
+      },
+      action: {
+        removeLabelIds: action === "trash" ? ["INBOX"] : ["INBOX"],
+        addLabelIds: action === "trash" ? ["TRASH"] : [],
+      },
+    },
+  });
+  
+  return response.data.id || "";
+}
+
+// Delete Gmail filter
+export async function deleteGmailFilter(
+  accessToken: string,
+  refreshToken: string,
+  filterId: string
+): Promise<void> {
+  const gmail = getGmailClient(accessToken, refreshToken);
+  
+  await gmail.users.settings.filters.delete({
+    userId: "me",
+    id: filterId,
+  });
+}
+
+// Extract attachment metadata from message parts (recursive)
+export function extractAttachmentMetadata(message: GmailMessage): AttachmentMetadata[] {
+  const attachments: AttachmentMetadata[] = [];
+
+  function traverseParts(parts?: GmailMessagePart[]) {
+    if (!parts) return;
+    for (const part of parts) {
+      if (part.body?.attachmentId && part.filename) {
+        attachments.push({
+          attachmentId: part.body.attachmentId,
+          fileName: part.filename,
+          mimeType: part.mimeType,
+          size: part.body.size || 0,
+        });
+      }
+      if (part.parts) {
+        traverseParts(part.parts);
+      }
+    }
+  }
+
+  traverseParts(message.payload.parts);
+  return attachments;
+}
+
+// Download attachment data by ID
+export async function getAttachment(
+  accessToken: string,
+  refreshToken: string,
+  messageId: string,
+  attachmentId: string
+): Promise<Buffer> {
+  const gmail = getGmailClient(accessToken, refreshToken);
+
+  const response = await gmail.users.messages.attachments.get({
+    userId: "me",
+    messageId,
+    id: attachmentId,
+  });
+
+  const data = response.data.data || "";
+  // Gmail returns URL-safe base64
+  return Buffer.from(data, "base64");
+}
+
+// Get raw Gmail API message (not parsed) for attachment extraction
+export async function getRawMessage(
+  accessToken: string,
+  refreshToken: string,
+  messageId: string
+): Promise<GmailMessage> {
+  const gmail = getGmailClient(accessToken, refreshToken);
+
+  const response = await gmail.users.messages.get({
+    userId: "me",
+    id: messageId,
+    format: "full",
+  });
+
+  return response.data as unknown as GmailMessage;
+}
+
+// List Gmail filters
+export async function listGmailFilters(
+  accessToken: string,
+  refreshToken: string
+) {
+  const gmail = getGmailClient(accessToken, refreshToken);
+  
+  const response = await gmail.users.settings.filters.list({
+    userId: "me",
+  });
+  
+  return response.data.filter || [];
 }
