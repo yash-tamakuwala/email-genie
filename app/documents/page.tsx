@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import {
@@ -52,17 +52,22 @@ const DOC_TYPE_LABELS: Record<string, string> = {
 
 const DOC_TYPE_COLORS: Record<string, string> = {
   invoice: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
-  receipt:
-    "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
-  bank_statement:
-    "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
-  credit_card_statement:
-    "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300",
-  tax_document:
-    "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
-  payment_confirmation:
-    "bg-teal-100 text-teal-800 dark:bg-teal-900/30 dark:text-teal-300",
+  receipt: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+  bank_statement: "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
+  credit_card_statement: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300",
+  tax_document: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
+  payment_confirmation: "bg-teal-100 text-teal-800 dark:bg-teal-900/30 dark:text-teal-300",
 };
+
+type DatePreset = "1day" | "1week" | "1month" | "custom" | "all";
+
+const DATE_PRESETS: { label: string; value: DatePreset }[] = [
+  { label: "All time", value: "all" },
+  { label: "Today", value: "1day" },
+  { label: "1 week", value: "1week" },
+  { label: "1 month", value: "1month" },
+  { label: "Custom", value: "custom" },
+];
 
 function formatFileSize(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -70,6 +75,26 @@ function formatFileSize(bytes: number): string {
   const sizes = ["B", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+}
+
+function getPresetRange(preset: DatePreset): { from: Date | null; to: Date | null } {
+  const now = new Date();
+  if (preset === "1day") {
+    const from = new Date(now);
+    from.setHours(0, 0, 0, 0);
+    return { from, to: now };
+  }
+  if (preset === "1week") {
+    const from = new Date(now);
+    from.setDate(from.getDate() - 7);
+    return { from, to: now };
+  }
+  if (preset === "1month") {
+    const from = new Date(now);
+    from.setMonth(from.getMonth() - 1);
+    return { from, to: now };
+  }
+  return { from: null, to: null };
 }
 
 export default function DocumentsPage() {
@@ -80,6 +105,9 @@ export default function DocumentsPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedDocType, setSelectedDocType] = useState<string>("all");
   const [downloading, setDownloading] = useState<string | null>(null);
+  const [datePreset, setDatePreset] = useState<DatePreset>("all");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
 
   const fetchAttachments = useCallback(async () => {
     try {
@@ -116,9 +144,7 @@ export default function DocumentsPage() {
       try {
         const response = await fetch("/api/gmail/accounts");
         const data = await response.json();
-        if (data.success) {
-          setAccounts(data.accounts);
-        }
+        if (data.success) setAccounts(data.accounts);
       } catch (err) {
         console.error("Error fetching accounts:", err);
       }
@@ -130,6 +156,28 @@ export default function DocumentsPage() {
     fetchAttachments();
   }, [fetchAttachments]);
 
+  // Client-side date filtering
+  const filteredAttachments = useMemo(() => {
+    if (datePreset === "all") return attachments;
+
+    let from: Date | null = null;
+    let to: Date | null = null;
+
+    if (datePreset === "custom") {
+      from = customFrom ? new Date(customFrom) : null;
+      to = customTo ? new Date(customTo + "T23:59:59") : null;
+    } else {
+      ({ from, to } = getPresetRange(datePreset));
+    }
+
+    return attachments.filter((a) => {
+      const uploaded = new Date(a.uploadedAt);
+      if (from && uploaded < from) return false;
+      if (to && uploaded > to) return false;
+      return true;
+    });
+  }, [attachments, datePreset, customFrom, customTo]);
+
   const handleDownload = async (attachmentId: string) => {
     try {
       setDownloading(attachmentId);
@@ -137,7 +185,6 @@ export default function DocumentsPage() {
         `/api/financial-attachments/download?attachmentId=${attachmentId}`
       );
       const data = await response.json();
-
       if (data.success) {
         window.open(data.downloadUrl, "_blank");
       } else {
@@ -155,6 +202,9 @@ export default function DocumentsPage() {
     const account = accounts.find((acc) => acc.accountId === accountId);
     return account?.email || accountId;
   };
+
+  const hasActiveFilters =
+    searchQuery || selectedDocType !== "all" || datePreset !== "all";
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
@@ -183,18 +233,15 @@ export default function DocumentsPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>
-              Saved Documents ({attachments.length})
-            </CardTitle>
+            <CardTitle>Saved Documents ({filteredAttachments.length})</CardTitle>
             <CardDescription>
-              Financial documents are automatically detected and saved from your
-              emails
+              Financial documents are automatically detected and saved from your emails
             </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
-              {/* Filters */}
-              <div className="flex gap-4">
+              {/* Row 1: search + doc type + refresh */}
+              <div className="flex gap-3">
                 <div className="flex-1">
                   <Input
                     placeholder="Search by description..."
@@ -202,11 +249,8 @@ export default function DocumentsPage() {
                     onChange={(e) => setSearchQuery(e.target.value)}
                   />
                 </div>
-                <div className="w-64">
-                  <Select
-                    value={selectedDocType}
-                    onValueChange={setSelectedDocType}
-                  >
+                <div className="w-56">
+                  <Select value={selectedDocType} onValueChange={setSelectedDocType}>
                     <SelectTrigger>
                       <SelectValue placeholder="All types" />
                     </SelectTrigger>
@@ -225,27 +269,78 @@ export default function DocumentsPage() {
                 </Button>
               </div>
 
+              {/* Row 2: date preset shortcuts */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm text-gray-500 dark:text-gray-400 mr-1">Date:</span>
+                {DATE_PRESETS.map((preset) => (
+                  <button
+                    key={preset.value}
+                    onClick={() => setDatePreset(preset.value)}
+                    className={`px-3 py-1 rounded-full text-sm border transition-colors ${
+                      datePreset === preset.value
+                        ? "bg-gray-900 text-white border-gray-900 dark:bg-white dark:text-gray-900 dark:border-white"
+                        : "bg-white text-gray-700 border-gray-300 hover:border-gray-400 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-600 dark:hover:border-gray-400"
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Row 3: custom date range (only when custom is selected) */}
+              {datePreset === "custom" && (
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <label className="text-sm text-gray-600 dark:text-gray-400 whitespace-nowrap">From</label>
+                    <Input
+                      type="date"
+                      value={customFrom}
+                      onChange={(e) => setCustomFrom(e.target.value)}
+                      className="w-40"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="text-sm text-gray-600 dark:text-gray-400 whitespace-nowrap">To</label>
+                    <Input
+                      type="date"
+                      value={customTo}
+                      onChange={(e) => setCustomTo(e.target.value)}
+                      className="w-40"
+                    />
+                  </div>
+                  {(customFrom || customTo) && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => { setCustomFrom(""); setCustomTo(""); }}
+                      className="text-gray-500"
+                    >
+                      Clear
+                    </Button>
+                  )}
+                </div>
+              )}
+
               {/* Attachments list */}
               {loading ? (
                 <div className="text-center py-8">
                   <p className="text-gray-500">Loading documents...</p>
                 </div>
-              ) : attachments.length === 0 ? (
+              ) : filteredAttachments.length === 0 ? (
                 <div className="text-center py-8">
                   <p className="text-gray-500 mb-2">
-                    {searchQuery || selectedDocType !== "all"
+                    {hasActiveFilters
                       ? "No documents match your filters"
                       : "No financial documents saved yet"}
                   </p>
                   <p className="text-sm text-gray-400">
                     Financial documents (invoices, statements, receipts) are
-                    automatically detected and saved when your emails are
-                    processed
+                    automatically detected and saved when your emails are processed
                   </p>
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {attachments.map((attachment) => (
+                  {filteredAttachments.map((attachment) => (
                     <div
                       key={attachment.attachmentId}
                       className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-800 rounded-lg border"
@@ -256,30 +351,17 @@ export default function DocumentsPage() {
                             {attachment.description || attachment.emailSubject}
                           </p>
                           <Badge
-                            className={
-                              DOC_TYPE_COLORS[
-                                attachment.financialDocumentType
-                              ] || ""
-                            }
+                            className={DOC_TYPE_COLORS[attachment.financialDocumentType] || ""}
                           >
-                            {DOC_TYPE_LABELS[
-                              attachment.financialDocumentType
-                            ] || attachment.financialDocumentType}
+                            {DOC_TYPE_LABELS[attachment.financialDocumentType] ||
+                              attachment.financialDocumentType}
                           </Badge>
                         </div>
                         <div className="flex flex-wrap items-center gap-4 text-sm text-gray-600 dark:text-gray-400">
-                          <span title={attachment.fileName}>
-                            {attachment.fileName}
-                          </span>
+                          <span title={attachment.fileName}>{attachment.fileName}</span>
                           <span>{formatFileSize(attachment.fileSize)}</span>
-                          <span>
-                            {getAccountEmail(attachment.accountId)}
-                          </span>
-                          <span>
-                            {new Date(
-                              attachment.uploadedAt
-                            ).toLocaleDateString()}
-                          </span>
+                          <span>{getAccountEmail(attachment.accountId)}</span>
+                          <span>{new Date(attachment.uploadedAt).toLocaleDateString()}</span>
                         </div>
                       </div>
                       <Button
@@ -287,13 +369,9 @@ export default function DocumentsPage() {
                         size="sm"
                         className="ml-4 shrink-0"
                         disabled={downloading === attachment.attachmentId}
-                        onClick={() =>
-                          handleDownload(attachment.attachmentId)
-                        }
+                        onClick={() => handleDownload(attachment.attachmentId)}
                       >
-                        {downloading === attachment.attachmentId
-                          ? "..."
-                          : "Download"}
+                        {downloading === attachment.attachmentId ? "..." : "Download"}
                       </Button>
                     </div>
                   ))}
