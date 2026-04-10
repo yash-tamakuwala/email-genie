@@ -6,7 +6,10 @@ import {
   setJobStatus,
   createBlockedSender,
   getBlockedSender,
+  markAccountSyncErrorNotified,
+  clearAccountSyncError,
 } from "@/lib/dynamodb";
+import { sendSyncErrorNotification } from "@/lib/email-notifier";
 import { pollAccountForEmails } from "@/lib/email-poller";
 import { generateEmailId, SINGLE_USER_ID } from "@/lib/auth";
 import { processFinancialDocument } from "@/lib/financial-document-processor";
@@ -54,9 +57,11 @@ export async function runEmailProcessingJob(): Promise<JobRunSummary> {
         fetch('http://127.0.0.1:7246/ingest/c7dc27dc-24a4-4ecd-b380-2fe3fa6f3eb4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'lib/background-jobs.ts:40',message:'Processing account',data:{accountId:account.accountId,email:account.email},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,B,C'})}).catch(()=>{});
         // #endregion
         const { emails, accessToken, refreshToken } = await pollAccountForEmails(account);
-        // #region agent log
-        fetch('http://127.0.0.1:7246/ingest/c7dc27dc-24a4-4ecd-b380-2fe3fa6f3eb4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'lib/background-jobs.ts:45',message:'Polling completed',data:{accountId:account.accountId,emailCount:emails.length},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C,D'})}).catch(()=>{});
-        // #endregion
+
+        // Clear sync error flag on successful poll
+        if (account.syncErrorNotifiedAt) {
+          await clearAccountSyncError(SINGLE_USER_ID, account.accountId);
+        }
 
         if (!emails.length) {
           continue;
@@ -245,10 +250,18 @@ export async function runEmailProcessingJob(): Promise<JobRunSummary> {
         }
       } catch (error) {
         errorCount += 1;
-        // #region agent log
-        fetch('http://127.0.0.1:7246/ingest/c7dc27dc-24a4-4ecd-b380-2fe3fa6f3eb4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'lib/background-jobs.ts:115',message:'ERROR polling account',data:{accountId:account.accountId,email:account.email,error:error instanceof Error ? error.message : String(error),errorStack:error instanceof Error ? error.stack : undefined},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,B,E'})}).catch(()=>{});
-        // #endregion
-        console.error(`Error polling account ${account.accountId}:`, error);
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(`Error polling account ${account.accountId} (${account.email}): ${errorMessage}`);
+
+        // Send notification once — skip if already notified
+        if (!account.syncErrorNotifiedAt) {
+          try {
+            await sendSyncErrorNotification(account.email, account.accountId, errorMessage);
+            await markAccountSyncErrorNotified(SINGLE_USER_ID, account.accountId);
+          } catch (notifyError) {
+            console.error("Failed to send sync error notification:", notifyError);
+          }
+        }
       }
     }
 

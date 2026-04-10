@@ -43,6 +43,7 @@ export interface GmailAccount {
   refreshToken: string;
   tokenExpiry: number;
   lastEmailCheck?: number;
+  syncErrorNotifiedAt?: string; // ISO timestamp of last sync error notification, cleared on success
   createdAt: string;
   updatedAt: string;
 }
@@ -231,6 +232,39 @@ export async function updateGmailAccountLastCheck(
       UpdateExpression: "SET lastEmailCheck = :lec, updatedAt = :ua",
       ExpressionAttributeValues: {
         ":lec": lastEmailCheck,
+        ":ua": new Date().toISOString(),
+      },
+    })
+  );
+}
+
+export async function markAccountSyncErrorNotified(userId: string, accountId: string) {
+  await dynamoDb.send(
+    new UpdateCommand({
+      TableName: TABLES.GMAIL_ACCOUNTS,
+      Key: {
+        pk: `USER#${userId}`,
+        sk: `ACCOUNT#${accountId}`,
+      },
+      UpdateExpression: "SET syncErrorNotifiedAt = :t, updatedAt = :ua",
+      ExpressionAttributeValues: {
+        ":t": new Date().toISOString(),
+        ":ua": new Date().toISOString(),
+      },
+    })
+  );
+}
+
+export async function clearAccountSyncError(userId: string, accountId: string) {
+  await dynamoDb.send(
+    new UpdateCommand({
+      TableName: TABLES.GMAIL_ACCOUNTS,
+      Key: {
+        pk: `USER#${userId}`,
+        sk: `ACCOUNT#${accountId}`,
+      },
+      UpdateExpression: "REMOVE syncErrorNotifiedAt SET updatedAt = :ua",
+      ExpressionAttributeValues: {
         ":ua": new Date().toISOString(),
       },
     })
