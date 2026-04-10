@@ -23,6 +23,8 @@ export interface ProcessFinancialDocumentParams {
   emailFrom: string;
   emailSubject: string;
   emailDate: string;
+  emailBody: string;
+  emailSnippet: string;
   financialDocumentType: string;
   description: string;
 }
@@ -38,6 +40,12 @@ export async function processFinancialDocument(
     params.refreshToken,
     params.messageId
   );
+
+  // Extract "To" header from raw message
+  const toHeader = rawMessage.payload.headers.find(
+    (h) => h.name.toLowerCase() === "to"
+  );
+  const emailTo = toHeader?.value || "";
 
   const attachmentMetas = extractAttachmentMetadata(rawMessage);
 
@@ -85,7 +93,10 @@ export async function processFinancialDocument(
         emailMessageId: params.messageId,
         emailSubject: params.emailSubject,
         emailFrom: params.emailFrom,
+        emailTo,
         emailDate: params.emailDate,
+        emailBody: params.emailBody,
+        emailSnippet: params.emailSnippet,
         fileName: meta.fileName,
         fileSize: data.length,
         mimeType: meta.mimeType,

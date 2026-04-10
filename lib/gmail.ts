@@ -538,6 +538,24 @@ export async function getAttachment(
   return Buffer.from(data, "base64");
 }
 
+// Search messages with a free-form Gmail query
+export async function searchMessages(
+  accessToken: string,
+  refreshToken: string,
+  query: string,
+  maxResults: number = 50
+): Promise<GmailMessageRef[]> {
+  const gmail = getGmailClient(accessToken, refreshToken);
+
+  const response = await gmail.users.messages.list({
+    userId: "me",
+    maxResults,
+    q: query,
+  });
+
+  return (response.data.messages || []) as GmailMessageRef[];
+}
+
 // Get raw Gmail API message (not parsed) for attachment extraction
 export async function getRawMessage(
   accessToken: string,

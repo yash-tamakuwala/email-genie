@@ -132,7 +132,10 @@ export interface FinancialAttachment {
   emailMessageId: string;
   emailSubject: string;
   emailFrom: string;
+  emailTo: string;
   emailDate: string;
+  emailBody: string;
+  emailSnippet: string;
   fileName: string;
   fileSize: number;
   mimeType: string;
@@ -620,6 +623,8 @@ export async function listFinancialAttachmentsByUser(
   filters?: {
     documentType?: string;
     search?: string;
+    sender?: string;
+    receiver?: string;
   }
 ): Promise<FinancialAttachment[]> {
   // Use GSI1 to query by user
@@ -636,6 +641,16 @@ export async function listFinancialAttachmentsByUser(
   if (filters?.search) {
     filterExpressions.push("contains(description, :search)");
     expressionAttributeValues[":search"] = filters.search;
+  }
+
+  if (filters?.sender) {
+    filterExpressions.push("contains(emailFrom, :sender)");
+    expressionAttributeValues[":sender"] = filters.sender;
+  }
+
+  if (filters?.receiver) {
+    filterExpressions.push("contains(emailTo, :receiver)");
+    expressionAttributeValues[":receiver"] = filters.receiver;
   }
 
   const result = await dynamoDb.send(

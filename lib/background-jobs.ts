@@ -95,6 +95,8 @@ export async function runEmailProcessingJob(): Promise<JobRunSummary> {
                   emailFrom: email.from,
                   emailSubject: email.subject,
                   emailDate: new Date().toISOString(),
+                  emailBody: email.body,
+                  emailSnippet: email.snippet,
                   financialDocumentType: categorization.financialDocumentType,
                   description: categorization.financialDocumentDescription,
                 });

@@ -8,10 +8,14 @@ export async function GET(request: NextRequest) {
     const { searchParams } = request.nextUrl;
     const documentType = searchParams.get("documentType") || undefined;
     const search = searchParams.get("search") || undefined;
+    const sender = searchParams.get("sender") || undefined;
+    const receiver = searchParams.get("receiver") || undefined;
 
     const attachments = await listFinancialAttachmentsByUser(SINGLE_USER_ID, {
       documentType,
       search,
+      sender,
+      receiver,
     });
 
     return NextResponse.json({
