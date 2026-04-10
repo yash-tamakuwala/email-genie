@@ -8,7 +8,8 @@ const sesClient = new SESClient({
   },
 });
 
-const NOTIFY_EMAIL = "yash@propelius.tech";
+const FROM_EMAIL = "info@propelius.tech";
+const TO_EMAIL = "yash@propelius.tech";
 
 export async function sendSyncErrorNotification(
   accountEmail: string,
@@ -17,9 +18,9 @@ export async function sendSyncErrorNotification(
 ): Promise<void> {
   await sesClient.send(
     new SendEmailCommand({
-      Source: NOTIFY_EMAIL,
+      Source: FROM_EMAIL,
       Destination: {
-        ToAddresses: [NOTIFY_EMAIL],
+        ToAddresses: [TO_EMAIL],
       },
       Message: {
         Subject: {
