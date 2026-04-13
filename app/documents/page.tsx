@@ -128,16 +128,25 @@ export default function DocumentsPage() {
   const [showHistorical, setShowHistorical] = useState(false);
   const [historicalMode, setHistoricalMode] = useState<"form" | "ai">("form");
   const [historicalAccountId, setHistoricalAccountId] = useState("");
-  const [historicalQuery, setHistoricalQuery] = useState("");
   const [historicalMaxResults, setHistoricalMaxResults] = useState("50");
-  const [historicalProcessing, setHistoricalProcessing] = useState(false);
-  const [historicalResult, setHistoricalResult] = useState<{
-    found: number;
+  const [searching, setSearching] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [searchResults, setSearchResults] = useState<{
+    messageId: string;
+    from: string;
+    to: string;
+    subject: string;
+    date: string;
+    snippet: string;
+  }[]>([]);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(new Set());
+  const [saveDocType, setSaveDocType] = useState("invoice");
+  const [lastQueryUsed, setLastQueryUsed] = useState("");
+  const [saveResult, setSaveResult] = useState<{
     processed: number;
     skipped: number;
     errors: number;
     results: string[];
-    queryUsed: string;
   } | null>(null);
 
   // Form builder fields
@@ -255,54 +264,80 @@ export default function DocumentsPage() {
     return parts.join(" ");
   }
 
-  const handleProcessHistorical = async (queryOverride?: string) => {
-    const query = queryOverride || historicalQuery.trim();
+  const handleSearch = async (query: string) => {
     if (!historicalAccountId || !query) return;
 
     try {
-      setHistoricalProcessing(true);
-      setHistoricalResult(null);
+      setSearching(true);
+      setSearchResults([]);
+      setSelectedMessageIds(new Set());
+      setSaveResult(null);
+      setLastQueryUsed(query);
+
+      const params = new URLSearchParams({
+        accountId: historicalAccountId,
+        query,
+        maxResults: historicalMaxResults,
+      });
+
+      const response = await fetch(`/api/financial-attachments/process-historical?${params}`);
+      const data = await response.json();
+
+      if (data.success) {
+        setSearchResults(data.emails || []);
+      } else {
+        alert(`Error: ${data.error}`);
+      }
+    } catch (err: unknown) {
+      alert(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const handleSaveSelected = async () => {
+    if (selectedMessageIds.size === 0 || !historicalAccountId) return;
+
+    try {
+      setSaving(true);
+      setSaveResult(null);
 
       const response = await fetch("/api/financial-attachments/process-historical", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           accountId: historicalAccountId,
-          query,
-          maxResults: parseInt(historicalMaxResults) || 50,
+          messageIds: [...selectedMessageIds],
+          documentType: saveDocType,
         }),
       });
 
       const data = await response.json();
       if (data.success) {
-        setHistoricalResult({
-          found: data.found,
+        setSaveResult({
           processed: data.processed,
           skipped: data.skipped,
           errors: data.errors,
           results: data.results || [],
-          queryUsed: query,
         });
         await fetchAttachments();
       } else {
         alert(`Error: ${data.error}`);
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      alert(`Error: ${message}`);
+      alert(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
     } finally {
-      setHistoricalProcessing(false);
+      setSaving(false);
     }
   };
 
-  const handleFormProcess = () => {
+  const handleFormSearch = () => {
     const query = buildFormQuery();
     if (!query) return;
-    setHistoricalQuery(query);
-    handleProcessHistorical(query);
+    handleSearch(query);
   };
 
-  const handleAiConvertAndProcess = async () => {
+  const handleAiSearch = async () => {
     if (!aiQuery.trim() || !historicalAccountId) return;
 
     try {
@@ -320,19 +355,33 @@ export default function DocumentsPage() {
       if (data.success) {
         setAiConvertedQuery(data.query);
         setAiExplanation(data.explanation);
-        setHistoricalQuery(data.query);
         setAiConverting(false);
-        // Auto-process with converted query
-        await handleProcessHistorical(data.query);
+        await handleSearch(data.query);
       } else {
         alert(`Error: ${data.error}`);
         setAiConverting(false);
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      alert(`Error: ${message}`);
+      alert(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
       setAiConverting(false);
     }
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedMessageIds.size === searchResults.length) {
+      setSelectedMessageIds(new Set());
+    } else {
+      setSelectedMessageIds(new Set(searchResults.map((e) => e.messageId)));
+    }
+  };
+
+  const toggleSelect = (messageId: string) => {
+    setSelectedMessageIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(messageId)) next.delete(messageId);
+      else next.add(messageId);
+      return next;
+    });
   };
 
   const getAccountEmail = (accountId: string) => {
@@ -597,57 +646,30 @@ export default function DocumentsPage() {
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">From (sender)</label>
-                        <Input
-                          placeholder="e.g. hdfc, amazon, noreply@bank.com"
-                          value={formFrom}
-                          onChange={(e) => setFormFrom(e.target.value)}
-                        />
+                        <Input placeholder="e.g. hdfc, amazon, noreply@bank.com" value={formFrom} onChange={(e) => setFormFrom(e.target.value)} />
                       </div>
                       <div>
                         <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">Subject contains</label>
-                        <Input
-                          placeholder="e.g. invoice, statement, receipt"
-                          value={formSubject}
-                          onChange={(e) => setFormSubject(e.target.value)}
-                        />
+                        <Input placeholder="e.g. invoice, statement, receipt" value={formSubject} onChange={(e) => setFormSubject(e.target.value)} />
                       </div>
                     </div>
-
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">After date</label>
-                        <Input
-                          type="date"
-                          value={formAfter}
-                          onChange={(e) => setFormAfter(e.target.value)}
-                        />
+                        <Input type="date" value={formAfter} onChange={(e) => setFormAfter(e.target.value)} />
                       </div>
                       <div>
                         <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">Before date</label>
-                        <Input
-                          type="date"
-                          value={formBefore}
-                          onChange={(e) => setFormBefore(e.target.value)}
-                        />
+                        <Input type="date" value={formBefore} onChange={(e) => setFormBefore(e.target.value)} />
                       </div>
                     </div>
-
                     <div className="grid grid-cols-3 gap-3">
                       <div>
                         <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">Older than</label>
                         <div className="flex gap-2">
-                          <Input
-                            type="number"
-                            placeholder="e.g. 30"
-                            value={formOlderThan}
-                            onChange={(e) => setFormOlderThan(e.target.value)}
-                            min={1}
-                            className="w-20"
-                          />
+                          <Input type="number" placeholder="e.g. 30" value={formOlderThan} onChange={(e) => setFormOlderThan(e.target.value)} min={1} className="w-20" />
                           <Select value={formOlderThanUnit} onValueChange={setFormOlderThanUnit}>
-                            <SelectTrigger className="w-28">
-                              <SelectValue />
-                            </SelectTrigger>
+                            <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
                             <SelectContent>
                               <SelectItem value="d">Days</SelectItem>
                               <SelectItem value="m">Months</SelectItem>
@@ -658,39 +680,23 @@ export default function DocumentsPage() {
                       </div>
                       <div>
                         <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">Attachment filename</label>
-                        <Input
-                          placeholder="e.g. pdf, invoice.pdf"
-                          value={formFilename}
-                          onChange={(e) => setFormFilename(e.target.value)}
-                        />
+                        <Input placeholder="e.g. pdf, invoice.pdf" value={formFilename} onChange={(e) => setFormFilename(e.target.value)} />
                       </div>
                       <div className="flex items-end pb-1">
                         <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={formHasAttachment}
-                            onChange={(e) => setFormHasAttachment(e.target.checked)}
-                            className="rounded"
-                          />
+                          <input type="checkbox" checked={formHasAttachment} onChange={(e) => setFormHasAttachment(e.target.checked)} className="rounded" />
                           <span className="text-sm text-gray-600 dark:text-gray-400">Has attachment</span>
                         </label>
                       </div>
                     </div>
-
-                    {/* Show constructed query */}
                     {buildFormQuery() && (
                       <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-3 text-sm">
                         <span className="text-gray-500 dark:text-gray-400">Query: </span>
                         <code className="text-gray-900 dark:text-gray-100">{buildFormQuery()}</code>
                       </div>
                     )}
-
-                    <Button
-                      onClick={handleFormProcess}
-                      disabled={historicalProcessing || !historicalAccountId || !buildFormQuery()}
-                      className="w-full"
-                    >
-                      {historicalProcessing ? "Processing..." : "Process"}
+                    <Button onClick={handleFormSearch} disabled={searching || !historicalAccountId || !buildFormQuery()} className="w-full">
+                      {searching ? "Searching..." : "Search"}
                     </Button>
                   </div>
                 )}
@@ -699,16 +705,9 @@ export default function DocumentsPage() {
                 {historicalMode === "ai" && (
                   <div className="space-y-3">
                     <div>
-                      <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">
-                        Describe what you&apos;re looking for in plain English
-                      </label>
-                      <Input
-                        placeholder="e.g. Find all invoices from HDFC bank in the last 6 months"
-                        value={aiQuery}
-                        onChange={(e) => setAiQuery(e.target.value)}
-                      />
+                      <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">Describe what you&apos;re looking for in plain English</label>
+                      <Input placeholder="e.g. Find all invoices from HDFC bank in the last 6 months" value={aiQuery} onChange={(e) => setAiQuery(e.target.value)} />
                     </div>
-
                     <div className="text-sm text-gray-500 dark:text-gray-400">
                       <p className="font-medium mb-1">Examples:</p>
                       <ul className="list-disc ml-5 space-y-1">
@@ -718,65 +717,104 @@ export default function DocumentsPage() {
                         <li>Receipts from Amazon or Flipkart</li>
                       </ul>
                     </div>
-
-                    {/* Show converted query */}
                     {aiConvertedQuery && (
                       <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-3 space-y-2">
                         <div className="text-sm">
                           <span className="text-gray-500 dark:text-gray-400">Gmail query: </span>
                           <code className="text-gray-900 dark:text-gray-100">{aiConvertedQuery}</code>
                         </div>
-                        {aiExplanation && (
-                          <p className="text-xs text-gray-500 dark:text-gray-400">{aiExplanation}</p>
-                        )}
-                        <div className="flex gap-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              setHistoricalQuery(aiConvertedQuery);
-                              setHistoricalMode("form");
-                            }}
-                          >
-                            Edit query manually
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleProcessHistorical(aiConvertedQuery)}
-                            disabled={historicalProcessing}
-                          >
-                            Re-run this query
-                          </Button>
-                        </div>
+                        {aiExplanation && <p className="text-xs text-gray-500 dark:text-gray-400">{aiExplanation}</p>}
                       </div>
                     )}
-
-                    <Button
-                      onClick={handleAiConvertAndProcess}
-                      disabled={aiConverting || historicalProcessing || !historicalAccountId || !aiQuery.trim()}
-                      className="w-full"
-                    >
-                      {aiConverting ? "Converting..." : historicalProcessing ? "Processing..." : "Convert & Process"}
+                    <Button onClick={handleAiSearch} disabled={aiConverting || searching || !historicalAccountId || !aiQuery.trim()} className="w-full">
+                      {aiConverting ? "Converting..." : searching ? "Searching..." : "Search"}
                     </Button>
                   </div>
                 )}
 
-                {/* Results (shared across modes) */}
-                {historicalResult && (
+                {/* Query used */}
+                {lastQueryUsed && searchResults.length > 0 && (
+                  <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-3 text-sm">
+                    <span className="text-gray-500 dark:text-gray-400">Query used: </span>
+                    <code className="text-gray-900 dark:text-gray-100">{lastQueryUsed}</code>
+                  </div>
+                )}
+
+                {/* Search Results — email list with checkboxes */}
+                {searchResults.length > 0 && (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        Found {searchResults.length} emails — select which to save
+                      </p>
+                      <button onClick={toggleSelectAll} className="text-sm text-blue-600 dark:text-blue-400 hover:underline">
+                        {selectedMessageIds.size === searchResults.length ? "Deselect all" : "Select all"}
+                      </button>
+                    </div>
+
+                    <div className="space-y-2 max-h-96 overflow-y-auto">
+                      {searchResults.map((email) => (
+                        <label
+                          key={email.messageId}
+                          className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                            selectedMessageIds.has(email.messageId)
+                              ? "bg-blue-50 border-blue-300 dark:bg-blue-900/20 dark:border-blue-700"
+                              : "bg-gray-50 border-gray-200 dark:bg-gray-800 dark:border-gray-700 hover:border-gray-300"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedMessageIds.has(email.messageId)}
+                            onChange={() => toggleSelect(email.messageId)}
+                            className="mt-1 rounded"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium text-sm truncate">{email.subject || "(no subject)"}</p>
+                            <div className="flex flex-wrap gap-3 text-xs text-gray-500 dark:text-gray-400 mt-1">
+                              <span>From: {email.from}</span>
+                              {email.to && <span>To: {email.to}</span>}
+                              {email.date && <span>{email.date}</span>}
+                            </div>
+                            {email.snippet && <p className="text-xs text-gray-400 dark:text-gray-500 mt-1 line-clamp-1">{email.snippet}</p>}
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+
+                    {/* Save controls */}
+                    {selectedMessageIds.size > 0 && (
+                      <div className="flex items-center gap-3 pt-2 border-t">
+                        <div className="w-56">
+                          <Select value={saveDocType} onValueChange={setSaveDocType}>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Document type" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {Object.entries(DOC_TYPE_LABELS).map(([value, label]) => (
+                                <SelectItem key={value} value={value}>{label}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <Button onClick={handleSaveSelected} disabled={saving} className="flex-1">
+                          {saving ? "Saving..." : `Save ${selectedMessageIds.size} selected`}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Save results */}
+                {saveResult && (
                   <Alert className="bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800">
                     <AlertDescription>
                       <div className="text-blue-800 dark:text-blue-200">
                         <p className="font-medium mb-1">
-                          Found {historicalResult.found} emails — Saved {historicalResult.processed} documents, Skipped {historicalResult.skipped}, Errors {historicalResult.errors}
+                          Saved {saveResult.processed}, Skipped {saveResult.skipped}, Errors {saveResult.errors}
                         </p>
-                        <div className="text-sm mt-1">
-                          <span className="text-blue-600 dark:text-blue-300">Query used: </span>
-                          <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">{historicalResult.queryUsed}</code>
-                        </div>
-                        {historicalResult.results.length > 0 && (
+                        {saveResult.results.length > 0 && (
                           <ul className="list-disc ml-5 mt-2 text-sm">
-                            {historicalResult.results.map((r, i) => (
+                            {saveResult.results.map((r, i) => (
                               <li key={i}>{r}</li>
                             ))}
                           </ul>
