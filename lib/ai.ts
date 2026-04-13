@@ -383,3 +383,55 @@ function fallbackCategorization(
 
   return result;
 }
+
+// Gmail query conversion schema
+const GmailQuerySchema = z.object({
+  query: z.string().describe("The Gmail search query string using Gmail search operators"),
+  explanation: z.string().describe("Brief explanation of what the query searches for"),
+});
+
+export type GmailQueryResult = z.infer<typeof GmailQuerySchema>;
+
+const GMAIL_QUERY_SYSTEM_PROMPT = `You are a Gmail search query builder. Convert natural language descriptions into Gmail search query syntax.
+
+Gmail search operators:
+- from:sender — emails from a sender (email or name)
+- to:recipient — emails to a recipient
+- subject:word — subject contains word. Use subject:(word1 OR word2) for multiple
+- has:attachment — has file attachments
+- filename:name — attachment filename or extension (e.g. filename:pdf)
+- after:YYYY/MM/DD — emails after a date
+- before:YYYY/MM/DD — emails before a date
+- older_than:Nd / older_than:Nm / older_than:Ny — older than N days/months/years
+- newer_than:Nd / newer_than:Nm / newer_than:Ny — newer than N days/months/years
+- larger:5M / smaller:1M — by size
+- is:read / is:unread / is:starred
+- in:inbox / in:sent / in:trash
+- label:name — has a specific label
+- OR — boolean OR (must be uppercase)
+- Parentheses for grouping: subject:(invoice OR receipt)
+- Minus for exclusion: -from:noreply
+
+Examples:
+- "invoices from last 6 months" → "has:attachment subject:invoice newer_than:6m"
+- "bank statements from HDFC in 2025" → "has:attachment from:hdfc subject:statement after:2025/01/01 before:2025/12/31"
+- "credit card bills with PDF attachments" → "has:attachment subject:(credit card statement) filename:pdf"
+- "receipts from Amazon" → "has:attachment from:amazon subject:(receipt OR order confirmation)"
+- "tax documents from last year" → "has:attachment subject:(tax OR 1099 OR w-2) newer_than:1y"
+
+Always include has:attachment since we are looking for financial documents with file attachments.
+Return only the Gmail query syntax, no extra text in the query field.`;
+
+export async function convertToGmailQuery(
+  naturalLanguageQuery: string
+): Promise<GmailQueryResult> {
+  const result = await generateObject({
+    model: "openai/gpt-4o-mini",
+    system: GMAIL_QUERY_SYSTEM_PROMPT,
+    prompt: `Convert this to a Gmail search query: "${naturalLanguageQuery}"`,
+    schema: GmailQuerySchema,
+    temperature: 0.2,
+  });
+
+  return result.object;
+}

@@ -126,6 +126,7 @@ export default function DocumentsPage() {
 
   // Historical processing state
   const [showHistorical, setShowHistorical] = useState(false);
+  const [historicalMode, setHistoricalMode] = useState<"form" | "ai">("form");
   const [historicalAccountId, setHistoricalAccountId] = useState("");
   const [historicalQuery, setHistoricalQuery] = useState("");
   const [historicalMaxResults, setHistoricalMaxResults] = useState("50");
@@ -136,7 +137,24 @@ export default function DocumentsPage() {
     skipped: number;
     errors: number;
     results: string[];
+    queryUsed: string;
   } | null>(null);
+
+  // Form builder fields
+  const [formFrom, setFormFrom] = useState("");
+  const [formSubject, setFormSubject] = useState("");
+  const [formHasAttachment, setFormHasAttachment] = useState(true);
+  const [formAfter, setFormAfter] = useState("");
+  const [formBefore, setFormBefore] = useState("");
+  const [formOlderThan, setFormOlderThan] = useState("");
+  const [formOlderThanUnit, setFormOlderThanUnit] = useState("d");
+  const [formFilename, setFormFilename] = useState("");
+
+  // AI mode state
+  const [aiQuery, setAiQuery] = useState("");
+  const [aiConverting, setAiConverting] = useState(false);
+  const [aiConvertedQuery, setAiConvertedQuery] = useState("");
+  const [aiExplanation, setAiExplanation] = useState("");
 
   const fetchAttachments = useCallback(async () => {
     try {
@@ -225,8 +243,21 @@ export default function DocumentsPage() {
     }
   };
 
-  const handleProcessHistorical = async () => {
-    if (!historicalAccountId || !historicalQuery.trim()) return;
+  function buildFormQuery(): string {
+    const parts: string[] = [];
+    if (formHasAttachment) parts.push("has:attachment");
+    if (formFrom.trim()) parts.push(`from:${formFrom.trim()}`);
+    if (formSubject.trim()) parts.push(`subject:${formSubject.trim()}`);
+    if (formAfter) parts.push(`after:${formAfter.replace(/-/g, "/")}`);
+    if (formBefore) parts.push(`before:${formBefore.replace(/-/g, "/")}`);
+    if (formOlderThan.trim()) parts.push(`older_than:${formOlderThan.trim()}${formOlderThanUnit}`);
+    if (formFilename.trim()) parts.push(`filename:${formFilename.trim()}`);
+    return parts.join(" ");
+  }
+
+  const handleProcessHistorical = async (queryOverride?: string) => {
+    const query = queryOverride || historicalQuery.trim();
+    if (!historicalAccountId || !query) return;
 
     try {
       setHistoricalProcessing(true);
@@ -237,7 +268,7 @@ export default function DocumentsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           accountId: historicalAccountId,
-          query: historicalQuery.trim(),
+          query,
           maxResults: parseInt(historicalMaxResults) || 50,
         }),
       });
@@ -250,8 +281,8 @@ export default function DocumentsPage() {
           skipped: data.skipped,
           errors: data.errors,
           results: data.results || [],
+          queryUsed: query,
         });
-        // Refresh the attachment list
         await fetchAttachments();
       } else {
         alert(`Error: ${data.error}`);
@@ -261,6 +292,46 @@ export default function DocumentsPage() {
       alert(`Error: ${message}`);
     } finally {
       setHistoricalProcessing(false);
+    }
+  };
+
+  const handleFormProcess = () => {
+    const query = buildFormQuery();
+    if (!query) return;
+    setHistoricalQuery(query);
+    handleProcessHistorical(query);
+  };
+
+  const handleAiConvertAndProcess = async () => {
+    if (!aiQuery.trim() || !historicalAccountId) return;
+
+    try {
+      setAiConverting(true);
+      setAiConvertedQuery("");
+      setAiExplanation("");
+
+      const response = await fetch("/api/financial-attachments/convert-query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ naturalLanguageQuery: aiQuery.trim() }),
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        setAiConvertedQuery(data.query);
+        setAiExplanation(data.explanation);
+        setHistoricalQuery(data.query);
+        setAiConverting(false);
+        // Auto-process with converted query
+        await handleProcessHistorical(data.query);
+      } else {
+        alert(`Error: ${data.error}`);
+        setAiConverting(false);
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      alert(`Error: ${message}`);
+      setAiConverting(false);
     }
   };
 
@@ -467,7 +538,8 @@ export default function DocumentsPage() {
           </CardHeader>
           {showHistorical && (
             <CardContent>
-              <div className="space-y-4">
+              <div className="space-y-5">
+                {/* Account + Max Results (shared across modes) */}
                 <div className="flex gap-3">
                   <div className="w-56">
                     <Select value={historicalAccountId} onValueChange={setHistoricalAccountId}>
@@ -483,13 +555,6 @@ export default function DocumentsPage() {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="flex-1">
-                    <Input
-                      placeholder="Gmail search query, e.g. has:attachment subject:invoice older_than:30d"
-                      value={historicalQuery}
-                      onChange={(e) => setHistoricalQuery(e.target.value)}
-                    />
-                  </div>
                   <div className="w-24">
                     <Input
                       type="number"
@@ -500,23 +565,204 @@ export default function DocumentsPage() {
                       max={100}
                     />
                   </div>
-                  <Button
-                    onClick={handleProcessHistorical}
-                    disabled={historicalProcessing || !historicalAccountId || !historicalQuery.trim()}
+                </div>
+
+                {/* Mode toggle */}
+                <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 p-1 rounded-lg w-fit">
+                  <button
+                    onClick={() => setHistoricalMode("form")}
+                    className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${
+                      historicalMode === "form"
+                        ? "bg-white dark:bg-gray-700 shadow-sm"
+                        : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                    }`}
                   >
-                    {historicalProcessing ? "Processing..." : "Process"}
-                  </Button>
+                    Form Builder
+                  </button>
+                  <button
+                    onClick={() => setHistoricalMode("ai")}
+                    className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${
+                      historicalMode === "ai"
+                        ? "bg-white dark:bg-gray-700 shadow-sm"
+                        : "text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+                    }`}
+                  >
+                    AI Search
+                  </button>
                 </div>
 
-                <div className="text-sm text-gray-500 dark:text-gray-400">
-                  <p className="font-medium mb-1">Example queries:</p>
-                  <ul className="list-disc ml-5 space-y-1">
-                    <li><code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">has:attachment subject:invoice</code> — Emails with attachments containing &quot;invoice&quot; in subject</li>
-                    <li><code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">has:attachment from:bank older_than:30d</code> — Bank emails older than 30 days</li>
-                    <li><code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">has:attachment subject:(statement OR receipt) after:2025/01/01</code> — Statements or receipts since Jan 2025</li>
-                  </ul>
-                </div>
+                {/* Form Builder Mode */}
+                {historicalMode === "form" && (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">From (sender)</label>
+                        <Input
+                          placeholder="e.g. hdfc, amazon, noreply@bank.com"
+                          value={formFrom}
+                          onChange={(e) => setFormFrom(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">Subject contains</label>
+                        <Input
+                          placeholder="e.g. invoice, statement, receipt"
+                          value={formSubject}
+                          onChange={(e) => setFormSubject(e.target.value)}
+                        />
+                      </div>
+                    </div>
 
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">After date</label>
+                        <Input
+                          type="date"
+                          value={formAfter}
+                          onChange={(e) => setFormAfter(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">Before date</label>
+                        <Input
+                          type="date"
+                          value={formBefore}
+                          onChange={(e) => setFormBefore(e.target.value)}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-3">
+                      <div>
+                        <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">Older than</label>
+                        <div className="flex gap-2">
+                          <Input
+                            type="number"
+                            placeholder="e.g. 30"
+                            value={formOlderThan}
+                            onChange={(e) => setFormOlderThan(e.target.value)}
+                            min={1}
+                            className="w-20"
+                          />
+                          <Select value={formOlderThanUnit} onValueChange={setFormOlderThanUnit}>
+                            <SelectTrigger className="w-28">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="d">Days</SelectItem>
+                              <SelectItem value="m">Months</SelectItem>
+                              <SelectItem value="y">Years</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">Attachment filename</label>
+                        <Input
+                          placeholder="e.g. pdf, invoice.pdf"
+                          value={formFilename}
+                          onChange={(e) => setFormFilename(e.target.value)}
+                        />
+                      </div>
+                      <div className="flex items-end pb-1">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={formHasAttachment}
+                            onChange={(e) => setFormHasAttachment(e.target.checked)}
+                            className="rounded"
+                          />
+                          <span className="text-sm text-gray-600 dark:text-gray-400">Has attachment</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* Show constructed query */}
+                    {buildFormQuery() && (
+                      <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-3 text-sm">
+                        <span className="text-gray-500 dark:text-gray-400">Query: </span>
+                        <code className="text-gray-900 dark:text-gray-100">{buildFormQuery()}</code>
+                      </div>
+                    )}
+
+                    <Button
+                      onClick={handleFormProcess}
+                      disabled={historicalProcessing || !historicalAccountId || !buildFormQuery()}
+                      className="w-full"
+                    >
+                      {historicalProcessing ? "Processing..." : "Process"}
+                    </Button>
+                  </div>
+                )}
+
+                {/* AI Search Mode */}
+                {historicalMode === "ai" && (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">
+                        Describe what you&apos;re looking for in plain English
+                      </label>
+                      <Input
+                        placeholder="e.g. Find all invoices from HDFC bank in the last 6 months"
+                        value={aiQuery}
+                        onChange={(e) => setAiQuery(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="text-sm text-gray-500 dark:text-gray-400">
+                      <p className="font-medium mb-1">Examples:</p>
+                      <ul className="list-disc ml-5 space-y-1">
+                        <li>All invoices from last year</li>
+                        <li>Credit card statements from HDFC in the last 3 months</li>
+                        <li>Bank statements with PDF attachments from 2025</li>
+                        <li>Receipts from Amazon or Flipkart</li>
+                      </ul>
+                    </div>
+
+                    {/* Show converted query */}
+                    {aiConvertedQuery && (
+                      <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-3 space-y-2">
+                        <div className="text-sm">
+                          <span className="text-gray-500 dark:text-gray-400">Gmail query: </span>
+                          <code className="text-gray-900 dark:text-gray-100">{aiConvertedQuery}</code>
+                        </div>
+                        {aiExplanation && (
+                          <p className="text-xs text-gray-500 dark:text-gray-400">{aiExplanation}</p>
+                        )}
+                        <div className="flex gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setHistoricalQuery(aiConvertedQuery);
+                              setHistoricalMode("form");
+                            }}
+                          >
+                            Edit query manually
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleProcessHistorical(aiConvertedQuery)}
+                            disabled={historicalProcessing}
+                          >
+                            Re-run this query
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    <Button
+                      onClick={handleAiConvertAndProcess}
+                      disabled={aiConverting || historicalProcessing || !historicalAccountId || !aiQuery.trim()}
+                      className="w-full"
+                    >
+                      {aiConverting ? "Converting..." : historicalProcessing ? "Processing..." : "Convert & Process"}
+                    </Button>
+                  </div>
+                )}
+
+                {/* Results (shared across modes) */}
                 {historicalResult && (
                   <Alert className="bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800">
                     <AlertDescription>
@@ -524,6 +770,10 @@ export default function DocumentsPage() {
                         <p className="font-medium mb-1">
                           Found {historicalResult.found} emails — Saved {historicalResult.processed} documents, Skipped {historicalResult.skipped}, Errors {historicalResult.errors}
                         </p>
+                        <div className="text-sm mt-1">
+                          <span className="text-blue-600 dark:text-blue-300">Query used: </span>
+                          <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">{historicalResult.queryUsed}</code>
+                        </div>
                         {historicalResult.results.length > 0 && (
                           <ul className="list-disc ml-5 mt-2 text-sm">
                             {historicalResult.results.map((r, i) => (
