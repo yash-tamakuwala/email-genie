@@ -85,15 +85,6 @@ export async function pollAccountForEmails(account: GmailAccount): Promise<PollR
     try {
       const parsed = await getMessage(accessToken, refreshToken, ref.id);
       
-      // Only process emails that are in INBOX and UNREAD
-      const isInInbox = parsed.labels.includes('INBOX');
-      const isUnread = parsed.labels.includes('UNREAD');
-      
-      if (!isInInbox || !isUnread) {
-        console.log(`Skipping email ${ref.id} (inbox: ${isInInbox}, unread: ${isUnread})`);
-        continue;
-      }
-      
       emails.push({
         accountId: account.accountId,
         messageId: parsed.messageId,
