@@ -53,9 +53,6 @@ export async function runEmailProcessingJob(): Promise<JobRunSummary> {
 
     for (const account of accounts) {
       try {
-        // #region agent log
-        fetch('http://127.0.0.1:7246/ingest/c7dc27dc-24a4-4ecd-b380-2fe3fa6f3eb4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'lib/background-jobs.ts:40',message:'Processing account',data:{accountId:account.accountId,email:account.email},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,B,C'})}).catch(()=>{});
-        // #endregion
         const { emails, accessToken, refreshToken } = await pollAccountForEmails(account);
 
         // Clear sync error flag on successful poll
