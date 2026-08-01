@@ -20,6 +20,15 @@ export const CategorizationResultSchema = z.object({
 
 export type CategorizationResult = z.infer<typeof CategorizationResultSchema>;
 
+// What categorizeEmail actually returns: the model-shaped result plus runtime
+// metadata about how it was produced. Kept off the schema so the model is never
+// asked to fill it. aiFailed marks a silent degradation — rule matching still
+// ran, but anything depending on the model was skipped.
+export interface CategorizationOutcome extends CategorizationResult {
+  aiFailed?: boolean;
+  aiError?: string;
+}
+
 // Email data interface
 export interface EmailData {
   from: string;
@@ -285,7 +294,7 @@ export function applyRuleConstraints(
 export async function categorizeEmail(
   email: EmailData,
   rules: CategorizationRule[]
-): Promise<CategorizationResult> {
+): Promise<CategorizationOutcome> {
   // Filter only enabled rules
   const enabledRules = rules.filter((rule) => rule.enabled);
 
@@ -345,8 +354,14 @@ Based on the rules, what actions should be applied to this email?`;
   } catch (error) {
     console.error("Error categorizing email with AI:", error);
 
-    // Fallback to rule-based categorization if AI fails
-    return fallbackCategorization(email, enabledRules);
+    // Fallback to rule-based categorization if AI fails. This degrades silently
+    // from the caller's perspective, so flag it — condition-less rules cannot
+    // match here at all, meaning AI-driven rules simply stop working.
+    return {
+      ...fallbackCategorization(email, enabledRules),
+      aiFailed: true,
+      aiError: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
