@@ -378,8 +378,12 @@ export async function listCategorizationRules(
     rules = rules.filter(rule => rule.accountIds.includes(accountId));
   }
   
-  // Sort by priority
-  return rules.sort((a, b) => a.priority - b.priority);
+  // Sort by priority. Rules sharing a priority would otherwise resolve in whatever
+  // order DynamoDB returned them, making the winning rule vary between runs, so
+  // ruleId breaks the tie to keep ordering stable.
+  return rules.sort(
+    (a, b) => a.priority - b.priority || a.ruleId.localeCompare(b.ruleId)
+  );
 }
 
 export async function updateCategorizationRule(
