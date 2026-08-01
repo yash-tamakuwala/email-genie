@@ -44,6 +44,8 @@ export interface GmailAccount {
   tokenExpiry: number;
   lastEmailCheck?: number;
   syncErrorNotifiedAt?: string; // ISO timestamp of last sync error notification, cleared on success
+  syncError?: string; // Message from the most recent poll failure, cleared on success
+  syncErrorAt?: string; // ISO timestamp of that failure
   createdAt: string;
   updatedAt: string;
 }
@@ -101,6 +103,7 @@ export interface JobStatus {
   status: "success" | "partial" | "error" | "running";
   processedCount: number;
   errorCount: number;
+  aiFailureCount?: number; // Emails that fell back to rule matching because the AI call failed
   message?: string;
   updatedAt: string;
 }
@@ -258,6 +261,31 @@ export async function markAccountSyncErrorNotified(userId: string, accountId: st
   );
 }
 
+// Record why a poll failed so the dashboard can show it, independently of the
+// one-shot email notification tracked by syncErrorNotifiedAt.
+export async function recordAccountSyncError(
+  userId: string,
+  accountId: string,
+  message: string
+) {
+  const now = new Date().toISOString();
+  await dynamoDb.send(
+    new UpdateCommand({
+      TableName: TABLES.GMAIL_ACCOUNTS,
+      Key: {
+        pk: `USER#${userId}`,
+        sk: `ACCOUNT#${accountId}`,
+      },
+      UpdateExpression: "SET syncError = :e, syncErrorAt = :t, updatedAt = :ua",
+      ExpressionAttributeValues: {
+        ":e": message.slice(0, 500),
+        ":t": now,
+        ":ua": now,
+      },
+    })
+  );
+}
+
 export async function clearAccountSyncError(userId: string, accountId: string) {
   await dynamoDb.send(
     new UpdateCommand({
@@ -266,7 +294,8 @@ export async function clearAccountSyncError(userId: string, accountId: string) {
         pk: `USER#${userId}`,
         sk: `ACCOUNT#${accountId}`,
       },
-      UpdateExpression: "REMOVE syncErrorNotifiedAt SET updatedAt = :ua",
+      UpdateExpression:
+        "REMOVE syncErrorNotifiedAt, syncError, syncErrorAt SET updatedAt = :ua",
       ExpressionAttributeValues: {
         ":ua": new Date().toISOString(),
       },

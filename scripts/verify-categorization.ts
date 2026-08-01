@@ -5,7 +5,8 @@ import {
   pickHigherPriority,
   type CategorizationResult,
 } from "@/lib/ai";
-import type { CategorizationRule } from "@/lib/dynamodb";
+import { evaluateHealth } from "@/lib/health";
+import type { CategorizationRule, GmailAccount, JobStatus } from "@/lib/dynamodb";
 
 let pass = 0;
 let fail = 0;
@@ -137,6 +138,74 @@ console.log("\n[4] pickHigherPriority");
   check("only declared match", pickHigherPriority(null, low, rules)?.name, "Low");
   check("neither -> null", pickHigherPriority(null, null, rules), null);
   check("same rule both ways", pickHigherPriority(high, high, rules)?.name, "High");
+}
+
+console.log("\n[5] evaluateHealth — failure detection");
+{
+  const NOW = new Date("2026-08-01T12:00:00Z").getTime();
+  const minsAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
+
+  function account(p: Partial<GmailAccount> = {}): GmailAccount {
+    return {
+      pk: "USER#u", sk: "ACCOUNT#a", accountId: "a", userId: "u",
+      email: "a@example.com", accessToken: "", refreshToken: "", tokenExpiry: 0,
+      createdAt: "", updatedAt: "",
+      ...p,
+    } as GmailAccount;
+  }
+
+  function job(p: Partial<JobStatus> = {}): JobStatus {
+    return {
+      pk: "JOB#GLOBAL", sk: "STATUS", lastRunAt: minsAgo(1), status: "success",
+      processedCount: 3, errorCount: 0, aiFailureCount: 0, updatedAt: "",
+      ...p,
+    } as JobStatus;
+  }
+
+  const healthy = evaluateHealth([account()], job(), NOW);
+  check("all healthy -> ok", healthy.overall, "ok");
+  check("all healthy -> no issues", healthy.issues.length, 0);
+  check("healthy account marked connected", healthy.accounts[0].connected, true);
+
+  const disconnected = evaluateHealth(
+    [account({ syncError: "invalid_grant: token expired", syncErrorAt: minsAgo(30) })],
+    job(),
+    NOW
+  );
+  check("sync error -> error overall", disconnected.overall, "error");
+  check("sync error -> account_disconnected issue", disconnected.issues[0].kind, "account_disconnected");
+  check("sync error surfaces the message", disconnected.issues[0].detail, "invalid_grant: token expired");
+  check("sync error -> account not connected", disconnected.accounts[0].connected, false);
+
+  const aiDown = evaluateHealth([account()], job({ aiFailureCount: 7 }), NOW);
+  check("ai failures -> error overall", aiDown.overall, "error");
+  check("ai failures -> ai_failing issue", aiDown.issues.map((i) => i.kind), ["ai_failing"]);
+  check("ai failure count in detail", aiDown.issues[0].detail.includes("7 emails"), true);
+  check("ai failure count surfaced on job", aiDown.job.aiFailureCount, 7);
+
+  const stale = evaluateHealth([account()], job({ lastRunAt: minsAgo(45) }), NOW);
+  check("stale cron -> error overall", stale.overall, "error");
+  check("stale cron -> job_stale issue", stale.issues.map((i) => i.kind), ["job_stale"]);
+  check("stale cron -> stale flag", stale.job.stale, true);
+  check("stale cron -> age in minutes", stale.job.ageMinutes, 45);
+
+  const fresh = evaluateHealth([account()], job({ lastRunAt: minsAgo(10) }), NOW);
+  check("10 min old is within threshold", fresh.job.stale, false);
+  check("10 min old raises nothing", fresh.issues.length, 0);
+
+  const never = evaluateHealth([account()], null, NOW);
+  check("no job status -> warning", never.overall, "warning");
+  check("no job status -> job_never_run", never.issues.map((i) => i.kind), ["job_never_run"]);
+  check("no job status -> null age", never.job.ageMinutes, null);
+
+  const multi = evaluateHealth(
+    [account({ syncError: "boom" }), account({ accountId: "b", email: "b@example.com" })],
+    job({ aiFailureCount: 2, lastRunAt: minsAgo(60) }),
+    NOW
+  );
+  check("multiple faults all reported",
+    multi.issues.map((i) => i.kind).sort(), ["account_disconnected", "ai_failing", "job_stale"]);
+  check("healthy account unaffected by sibling failure", multi.accounts[1].connected, true);
 }
 
 console.log(`\n${pass} passed, ${fail} failed\n`);

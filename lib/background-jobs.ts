@@ -7,6 +7,7 @@ import {
   createBlockedSender,
   getBlockedSender,
   markAccountSyncErrorNotified,
+  recordAccountSyncError,
   clearAccountSyncError,
 } from "@/lib/dynamodb";
 import { sendSyncErrorNotification } from "@/lib/email-notifier";
@@ -31,6 +32,7 @@ export interface JobRunSummary {
   status: "success" | "partial" | "error";
   processedCount: number;
   errorCount: number;
+  aiFailureCount: number;
   message?: string;
 }
 
@@ -42,11 +44,13 @@ export async function runEmailProcessingJob(): Promise<JobRunSummary> {
     status: "running",
     processedCount: 0,
     errorCount: 0,
+    aiFailureCount: 0,
     message: "Job started",
   });
 
   let processedCount = 0;
   let errorCount = 0;
+  let aiFailureCount = 0;
 
   try {
     const accounts = await listGmailAccounts(SINGLE_USER_ID);
@@ -55,8 +59,8 @@ export async function runEmailProcessingJob(): Promise<JobRunSummary> {
       try {
         const { emails, accessToken, refreshToken } = await pollAccountForEmails(account);
 
-        // Clear sync error flag on successful poll
-        if (account.syncErrorNotifiedAt) {
+        // Clear sync error state on successful poll
+        if (account.syncErrorNotifiedAt || account.syncError) {
           await clearAccountSyncError(SINGLE_USER_ID, account.accountId);
         }
 
@@ -77,6 +81,10 @@ export async function runEmailProcessingJob(): Promise<JobRunSummary> {
               },
               rules
             );
+
+            if (categorization.aiFailed) {
+              aiFailureCount += 1;
+            }
 
             const appliedActions: string[] = [];
 
@@ -252,6 +260,14 @@ export async function runEmailProcessingJob(): Promise<JobRunSummary> {
         const errorMessage = error instanceof Error ? error.message : String(error);
         console.error(`Error polling account ${account.accountId} (${account.email}): ${errorMessage}`);
 
+        // Persist the failure so the dashboard can show it. Separate from the
+        // notification below, which fires only once per outage.
+        try {
+          await recordAccountSyncError(SINGLE_USER_ID, account.accountId, errorMessage);
+        } catch (recordError) {
+          console.error("Failed to record account sync error:", recordError);
+        }
+
         // Send notification once — skip if already notified
         if (!account.syncErrorNotifiedAt) {
           try {
@@ -265,14 +281,20 @@ export async function runEmailProcessingJob(): Promise<JobRunSummary> {
     }
 
     const finishedAt = new Date().toISOString();
-    const status = errorCount > 0 ? "partial" : "success";
+    // An AI outage still "succeeds" per-email via the fallback, so it would
+    // otherwise report success while categorizing nothing. Treat it as partial.
+    const status = errorCount > 0 || aiFailureCount > 0 ? "partial" : "success";
+    const message =
+      `Processed ${processedCount} emails with ${errorCount} errors` +
+      (aiFailureCount > 0 ? `, ${aiFailureCount} AI failures` : "");
 
     await setJobStatus({
       lastRunAt: finishedAt,
       status,
       processedCount,
       errorCount,
-      message: `Processed ${processedCount} emails with ${errorCount} errors`,
+      aiFailureCount,
+      message,
     });
 
     return {
@@ -281,7 +303,8 @@ export async function runEmailProcessingJob(): Promise<JobRunSummary> {
       status,
       processedCount,
       errorCount,
-      message: `Processed ${processedCount} emails with ${errorCount} errors`,
+      aiFailureCount,
+      message,
     };
   } catch (error) {
     const finishedAt = new Date().toISOString();
@@ -290,6 +313,7 @@ export async function runEmailProcessingJob(): Promise<JobRunSummary> {
       status: "error",
       processedCount,
       errorCount: errorCount + 1,
+      aiFailureCount,
       message: "Job failed with an unexpected error",
     });
 
