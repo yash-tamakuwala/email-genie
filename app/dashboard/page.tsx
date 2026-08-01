@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { SystemHealthCard } from "@/components/SystemHealthCard";
 
 interface Account {
   accountId: string;
@@ -99,6 +100,8 @@ function DashboardContent() {
             </AlertDescription>
           </Alert>
         )}
+
+        <SystemHealthCard />
 
         <div className="grid md:grid-cols-2 gap-6 mb-8">
           <Card>

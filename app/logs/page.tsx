@@ -14,6 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { RuleTestDialog } from "@/components/RuleTestDialog";
 
 interface EmailLog {
   emailId: string;
@@ -42,6 +43,7 @@ export default function LogsPage() {
   const [selectedAccountId, setSelectedAccountId] = useState<string>("all");
   const [days, setDays] = useState<string>("7");
   const [selectedLog, setSelectedLog] = useState<EmailLog | null>(null);
+  const [testDialogOpen, setTestDialogOpen] = useState(false);
 
   const fetchLogs = async () => {
     try {
@@ -148,6 +150,9 @@ export default function LogsPage() {
             <Button onClick={fetchLogs} disabled={loading}>
               {loading ? "Loading..." : "Refresh"}
             </Button>
+            <Button variant="outline" onClick={() => setTestDialogOpen(true)}>
+              🧪 Test a rule
+            </Button>
           </CardContent>
         </Card>
 
@@ -226,6 +231,19 @@ export default function LogsPage() {
           )}
         </div>
       </div>
+
+      <RuleTestDialog
+        open={testDialogOpen}
+        onOpenChange={setTestDialogOpen}
+        accountId={selectedAccountId}
+        days={days}
+        accountLabel={
+          selectedAccountId === "all"
+            ? "all accounts"
+            : accounts.find((a) => a.accountId === selectedAccountId)?.email ??
+              "this account"
+        }
+      />
 
       {/* Detail Dialog */}
       <Dialog open={!!selectedLog} onOpenChange={() => setSelectedLog(null)}>

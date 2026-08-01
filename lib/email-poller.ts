@@ -60,18 +60,9 @@ export async function pollAccountForEmails(account: GmailAccount): Promise<PollR
   const now = Date.now();
   const lastCheck = account.lastEmailCheck ?? now - DEFAULT_LOOKBACK_MS;
   const sinceMs = Math.max(lastCheck - OVERLAP_MS, 0);
-  // #region agent log
-  fetch('http://127.0.0.1:7246/ingest/c7dc27dc-24a4-4ecd-b380-2fe3fa6f3eb4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'lib/email-poller.ts:53',message:'pollAccountForEmails started',data:{accountId:account.accountId,email:account.email,now,lastCheck,sinceMs,sinceMsReadable:new Date(sinceMs).toISOString()},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C,D'})}).catch(()=>{});
-  // #endregion
 
   const { accessToken, refreshToken } = await ensureValidTokens(account);
-  // #region agent log
-  fetch('http://127.0.0.1:7246/ingest/c7dc27dc-24a4-4ecd-b380-2fe3fa6f3eb4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'lib/email-poller.ts:60',message:'Tokens ensured',data:{accountId:account.accountId,hasAccessToken:!!accessToken,hasRefreshToken:!!refreshToken},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
-  // #endregion
   const messageRefs = await listMessageIdsSince(accessToken, refreshToken, sinceMs);
-  // #region agent log
-  fetch('http://127.0.0.1:7246/ingest/c7dc27dc-24a4-4ecd-b380-2fe3fa6f3eb4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'lib/email-poller.ts:65',message:'listMessageIdsSince result',data:{accountId:account.accountId,messageCount:messageRefs.length},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'B,D'})}).catch(()=>{});
-  // #endregion
 
   const emails: PolledEmail[] = [];
   const seenMessageIds = new Set<string>();

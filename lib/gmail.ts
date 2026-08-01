@@ -170,27 +170,14 @@ export async function listMessageIdsSince(
 ): Promise<GmailMessageRef[]> {
   const gmail = getGmailClient(accessToken, refreshToken);
   const sinceSeconds = Math.floor(sinceMs / 1000);
-  // #region agent log
-  fetch('http://127.0.0.1:7246/ingest/c7dc27dc-24a4-4ecd-b380-2fe3fa6f3eb4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'lib/gmail.ts:160',message:'Calling Gmail API messages.list',data:{sinceMs,sinceSeconds,sinceMsReadable:new Date(sinceMs).toISOString(),sinceSecondsReadable:new Date(sinceSeconds*1000).toISOString(),query:`after:${sinceSeconds}`,maxResults},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'B,D'})}).catch(()=>{});
-  // #endregion
 
-  try {
-    const response = await gmail.users.messages.list({
-      userId: "me",
-      maxResults,
-      q: `after:${sinceSeconds}`,
-    });
-    // #region agent log
-    fetch('http://127.0.0.1:7246/ingest/c7dc27dc-24a4-4ecd-b380-2fe3fa6f3eb4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'lib/gmail.ts:171',message:'Gmail API response',data:{messageCount:response.data.messages?.length || 0,hasMessages:!!response.data.messages},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'B,D'})}).catch(()=>{});
-    // #endregion
+  const response = await gmail.users.messages.list({
+    userId: "me",
+    maxResults,
+    q: `after:${sinceSeconds}`,
+  });
 
-    return (response.data.messages || []) as GmailMessageRef[];
-  } catch (error) {
-    // #region agent log
-    fetch('http://127.0.0.1:7246/ingest/c7dc27dc-24a4-4ecd-b380-2fe3fa6f3eb4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'lib/gmail.ts:177',message:'Gmail API ERROR',data:{error:error instanceof Error ? error.message : String(error),errorDetails:error},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'B,E'})}).catch(()=>{});
-    // #endregion
-    throw error;
-  }
+  return (response.data.messages || []) as GmailMessageRef[];
 }
 
 // Apply labels to message

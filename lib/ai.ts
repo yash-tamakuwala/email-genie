@@ -10,6 +10,7 @@ export const CategorizationResultSchema = z.object({
   shouldMarkReadAndLabel: z.boolean().describe("Whether the email should be marked as read and moved to a label without archiving (keeps it searchable)"),
   shouldBlockAndUnsubscribe: z.boolean().describe("Whether to block the sender and unsubscribe from their emails"),
   suggestedLabels: z.array(z.string()).describe("Labels to apply from the user's defined rules only. Do not invent new labels."),
+  matchedRuleName: z.string().describe("The exact name of the single highest-priority rule this email matches, copied verbatim from the rule list. Empty string if no rule matches."),
   isFinancialDocument: z.boolean().describe("Whether this email contains or is a financial document such as an invoice, receipt, bank statement, credit card statement, tax document, or payment confirmation"),
   financialDocumentType: z.enum(["invoice", "receipt", "bank_statement", "credit_card_statement", "tax_document", "payment_confirmation", "none"]).describe("The type of financial document, or 'none' if not a financial document"),
   financialDocumentDescription: z.string().describe("A one-line human-readable description of the financial document including vendor/bank name, document type, date, and identifying details like card ending or account number. Empty string if not a financial document. Example: 'HDFC Bank credit card statement dated March 2026 for card ending 4521'"),
@@ -18,6 +19,15 @@ export const CategorizationResultSchema = z.object({
 });
 
 export type CategorizationResult = z.infer<typeof CategorizationResultSchema>;
+
+// What categorizeEmail actually returns: the model-shaped result plus runtime
+// metadata about how it was produced. Kept off the schema so the model is never
+// asked to fill it. aiFailed marks a silent degradation — rule matching still
+// ran, but anything depending on the model was skipped.
+export interface CategorizationOutcome extends CategorizationResult {
+  aiFailed?: boolean;
+  aiError?: string;
+}
 
 // Email data interface
 export interface EmailData {
@@ -98,6 +108,10 @@ If no rule conditions match, return no actions (all booleans false, empty labels
 When multiple rules match, apply actions only from the highest-priority (earliest listed) rule.
 Do not invent labels or actions beyond what the matching rule specifies.
 
+You MUST set matchedRuleName to the name of the single rule you applied, copied verbatim from the list above.
+Set it to the empty string when no rule matches. Actions are validated against the named rule and silently
+dropped if that rule does not permit them, so naming the wrong rule causes your decision to be discarded.
+
 IMPORTANT - Financial Document Detection (always-on, independent of rules):
 You MUST always analyze whether the email is a financial document (invoice, receipt, bank statement, credit card statement, tax document, or payment confirmation). Set isFinancialDocument, financialDocumentType, and financialDocumentDescription accordingly.
 - If it IS a financial document, set isFinancialDocument=true, financialDocumentType to the appropriate type, and financialDocumentDescription to a concise one-line summary including the vendor/bank name, document type, date, and any identifying details (e.g. card ending, account number last 4 digits).
@@ -128,7 +142,7 @@ function ruleHasConditions(rule: CategorizationRule) {
   );
 }
 
-function findMatchingRule(
+export function findMatchingRule(
   email: EmailData,
   rules: CategorizationRule[]
 ): CategorizationRule | null {
@@ -147,38 +161,42 @@ function findMatchingRule(
       continue;
     }
 
-    let matches = false;
     const conditions = rule.conditions;
 
-    if (conditions?.senderEmail?.length) {
-      const senderMatches = conditions.senderEmail.some((ruleEmail) =>
-        senderEmail.includes(ruleEmail.toLowerCase())
-      );
-      if (senderMatches) matches = true;
-    }
+    // Each group is OR'd internally; the groups are AND'd together, so a rule
+    // specifying both a sender and a subject requires both to hold.
+    const groups: boolean[] = [];
 
-    if (conditions?.senderDomain?.length) {
-      const domainMatches = conditions.senderDomain.some((domain) =>
-        senderDomain.includes(domain.toLowerCase())
-      );
-      if (domainMatches) matches = true;
+    // Sender email and domain describe the same field, so they OR with each other.
+    if (conditions?.senderEmail?.length || conditions?.senderDomain?.length) {
+      const emailMatches =
+        conditions.senderEmail?.some((ruleEmail) =>
+          senderEmail.includes(ruleEmail.toLowerCase())
+        ) ?? false;
+      const domainMatches =
+        conditions.senderDomain?.some((domain) =>
+          senderDomain.includes(domain.toLowerCase())
+        ) ?? false;
+      groups.push(emailMatches || domainMatches);
     }
 
     if (conditions?.subjectContains?.length) {
-      const subjectMatches = conditions.subjectContains.some((keyword) =>
-        emailLower.subject.includes(keyword.toLowerCase())
+      groups.push(
+        conditions.subjectContains.some((keyword) =>
+          emailLower.subject.includes(keyword.toLowerCase())
+        )
       );
-      if (subjectMatches) matches = true;
     }
 
     if (conditions?.bodyContains?.length) {
-      const bodyMatches = conditions.bodyContains.some((keyword) =>
-        emailLower.body.includes(keyword.toLowerCase())
+      groups.push(
+        conditions.bodyContains.some((keyword) =>
+          emailLower.body.includes(keyword.toLowerCase())
+        )
       );
-      if (bodyMatches) matches = true;
     }
 
-    if (matches) {
+    if (groups.length > 0 && groups.every(Boolean)) {
       return rule;
     }
   }
@@ -186,7 +204,34 @@ function findMatchingRule(
   return null;
 }
 
-function applyRuleConstraints(
+// Resolve the rule name the model reported back to a real rule. Returns null for
+// an empty name or a hallucinated one, which collapses to "no rule matched".
+export function findRuleByName(
+  name: string | undefined,
+  rules: CategorizationRule[]
+): CategorizationRule | null {
+  const normalized = name?.trim().toLowerCase();
+  if (!normalized) return null;
+
+  return rules.find((rule) => rule.name.trim().toLowerCase() === normalized) ?? null;
+}
+
+// Rules arrive sorted ascending by priority, so the lower index is higher priority.
+// Ties favour the condition match, which is deterministic.
+export function pickHigherPriority(
+  conditionMatch: CategorizationRule | null,
+  declaredMatch: CategorizationRule | null,
+  rules: CategorizationRule[]
+): CategorizationRule | null {
+  if (!conditionMatch) return declaredMatch;
+  if (!declaredMatch) return conditionMatch;
+
+  return rules.indexOf(declaredMatch) < rules.indexOf(conditionMatch)
+    ? declaredMatch
+    : conditionMatch;
+}
+
+export function applyRuleConstraints(
   categorization: CategorizationResult,
   matchedRule: CategorizationRule | null
 ): CategorizationResult {
@@ -199,14 +244,26 @@ function applyRuleConstraints(
       shouldMarkReadAndLabel: false,
       shouldBlockAndUnsubscribe: false,
       suggestedLabels: [],
-      reasoning: "No rule conditions matched",
-      confidence: 1.0,
+      matchedRuleName: "",
+      reasoning: categorization.reasoning
+        ? `No rule matched: ${categorization.reasoning}`
+        : "No rule matched",
     };
   }
 
-  const allowedLabels = new Set(
-    matchedRule.actions.applyLabels?.map((label) => label.toLowerCase()) ?? []
+  // Map lowercased label -> the rule's canonical spelling, so a case variant from
+  // the model resolves to the existing Gmail label instead of creating a new one.
+  const allowedLabels = new Map(
+    matchedRule.actions.applyLabels?.map((label) => [label.toLowerCase(), label]) ?? []
   );
+
+  const suggestedLabels = [
+    ...new Set(
+      categorization.suggestedLabels
+        .map((label) => allowedLabels.get(label.toLowerCase()))
+        .filter((label): label is string => label !== undefined)
+    ),
+  ];
 
   return {
     ...categorization,
@@ -222,10 +279,14 @@ function applyRuleConstraints(
     shouldMarkReadAndLabel:
       Boolean(categorization.shouldMarkReadAndLabel) &&
       Boolean(matchedRule.actions.markReadAndLabel),
-    suggestedLabels: categorization.suggestedLabels.filter((label) =>
-      allowedLabels.has(label.toLowerCase())
-    ),
-    reasoning: matchedRule.name ? `Matched rule: ${matchedRule.name}` : categorization.reasoning,
+    shouldBlockAndUnsubscribe:
+      Boolean(categorization.shouldBlockAndUnsubscribe) &&
+      Boolean(matchedRule.actions.blockAndUnsubscribe),
+    suggestedLabels,
+    matchedRuleName: matchedRule.name,
+    reasoning: matchedRule.name
+      ? `Matched rule: ${matchedRule.name} — ${categorization.reasoning}`
+      : categorization.reasoning,
   };
 }
 
@@ -233,7 +294,7 @@ function applyRuleConstraints(
 export async function categorizeEmail(
   email: EmailData,
   rules: CategorizationRule[]
-): Promise<CategorizationResult> {
+): Promise<CategorizationOutcome> {
   // Filter only enabled rules
   const enabledRules = rules.filter((rule) => rule.enabled);
 
@@ -249,6 +310,7 @@ export async function categorizeEmail(
       isFinancialDocument: false,
       financialDocumentType: "none",
       financialDocumentDescription: "",
+      matchedRuleName: "",
       reasoning: "No active rules configured",
       confidence: 1.0,
     };
@@ -278,25 +340,28 @@ Based on the rules, what actions should be applied to this email?`;
       temperature: 0.3,
     });
 
-    const matchedRule = findMatchingRule(email, enabledRules);
+    // Two independent ways a rule can be selected: hard conditions evaluated here,
+    // and the rule the model says it applied (the only route for condition-less
+    // rules). Whichever is higher priority wins; enabledRules is sorted ascending
+    // by priority, so the earlier index is the stronger claim. Either way the
+    // result is clamped by applyRuleConstraints — the model never decides alone.
+    const conditionMatch = findMatchingRule(email, enabledRules);
+    const declaredMatch = findRuleByName(result.object.matchedRuleName, enabledRules);
 
-    // If no hard-condition rule matched, check if there are AI-only rules.
-    // If so, trust the AI's categorization since the AI evaluated those rules.
-    const hasAiOnlyRules = enabledRules.some(
-      (rule) => !ruleHasConditions(rule) && (rule.type === "AI" || rule.aiPrompt)
-    );
-
-    if (!matchedRule && hasAiOnlyRules) {
-      // AI made its decision based on AI-only rules — return as-is
-      return result.object;
-    }
+    const matchedRule = pickHigherPriority(conditionMatch, declaredMatch, enabledRules);
 
     return applyRuleConstraints(result.object, matchedRule);
   } catch (error) {
     console.error("Error categorizing email with AI:", error);
 
-    // Fallback to rule-based categorization if AI fails
-    return fallbackCategorization(email, enabledRules);
+    // Fallback to rule-based categorization if AI fails. This degrades silently
+    // from the caller's perspective, so flag it — condition-less rules cannot
+    // match here at all, meaning AI-driven rules simply stop working.
+    return {
+      ...fallbackCategorization(email, enabledRules),
+      aiFailed: true,
+      aiError: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
@@ -315,6 +380,7 @@ function fallbackCategorization(
     isFinancialDocument: false,
     financialDocumentType: "none",
     financialDocumentDescription: "",
+    matchedRuleName: "",
     reasoning: "Rule-based categorization (AI unavailable)",
     confidence: 0.7,
   };
@@ -322,7 +388,7 @@ function fallbackCategorization(
   const matchedRule = findMatchingRule(email, rules);
 
   if (!matchedRule) {
-    result.reasoning = "No rule conditions matched";
+    result.reasoning = "No rule conditions matched (AI unavailable)";
     result.confidence = 1.0;
   } else {
     if (matchedRule.actions.markImportant) {
@@ -343,7 +409,8 @@ function fallbackCategorization(
     if (matchedRule.actions.applyLabels?.length) {
       result.suggestedLabels.push(...matchedRule.actions.applyLabels);
     }
-    result.reasoning = `Matched rule: ${matchedRule.name}`;
+    result.matchedRuleName = matchedRule.name;
+    result.reasoning = `Matched rule: ${matchedRule.name} (AI unavailable)`;
     result.suggestedLabels = [...new Set(result.suggestedLabels)];
   }
 
