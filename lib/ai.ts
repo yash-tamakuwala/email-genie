@@ -10,7 +10,8 @@ export const CategorizationResultSchema = z.object({
   shouldMarkReadAndLabel: z.boolean().describe("Whether the email should be marked as read and moved to a label without archiving (keeps it searchable)"),
   shouldBlockAndUnsubscribe: z.boolean().describe("Whether to block the sender and unsubscribe from their emails"),
   suggestedLabels: z.array(z.string()).describe("Labels to apply from the user's defined rules only. Do not invent new labels."),
-  matchedRuleName: z.string().describe("The exact name of the single highest-priority rule this email matches, copied verbatim from the rule list. Empty string if no rule matches."),
+  matchedRuleId: z.string().describe("The rule id token (e.g. 'rule_2') of the single highest-priority rule this email matches, copied from the rule list. Empty string if no rule matches."),
+  matchedRuleName: z.string().describe("The Name of that same rule, copied verbatim from the rule list. Empty string if no rule matches."),
   isFinancialDocument: z.boolean().describe("Whether this email contains or is a financial document such as an invoice, receipt, bank statement, credit card statement, tax document, or payment confirmation"),
   financialDocumentType: z.enum(["invoice", "receipt", "bank_statement", "credit_card_statement", "tax_document", "payment_confirmation", "none"]).describe("The type of financial document, or 'none' if not a financial document"),
   financialDocumentDescription: z.string().describe("A one-line human-readable description of the financial document including vendor/bank name, document type, date, and identifying details like card ending or account number. Empty string if not a financial document. Example: 'HDFC Bank credit card statement dated March 2026 for card ending 4521'"),
@@ -20,13 +21,32 @@ export const CategorizationResultSchema = z.object({
 
 export type CategorizationResult = z.infer<typeof CategorizationResultSchema>;
 
+// How the winning rule was identified. "unresolved" means no rule was selected,
+// so every action was dropped — the state that silently swallows an AI rule the
+// model did decide to apply.
+export type RuleResolution =
+  | "conditions"
+  | "rule_id"
+  | "rule_name"
+  | "labels"
+  | "unresolved";
+
 // What categorizeEmail actually returns: the model-shaped result plus runtime
 // metadata about how it was produced. Kept off the schema so the model is never
 // asked to fill it. aiFailed marks a silent degradation — rule matching still
 // ran, but anything depending on the model was skipped.
+//
+// The declared* fields preserve what the model claimed before clamping. Without
+// them a dropped decision is indistinguishable from the model never making one,
+// which is exactly what made this class of bug invisible in the logs.
 export interface CategorizationOutcome extends CategorizationResult {
   aiFailed?: boolean;
   aiError?: string;
+  declaredRuleId?: string;
+  declaredRuleName?: string;
+  declaredLabels?: string[];
+  ruleResolution?: RuleResolution;
+  droppedLabels?: string[];
 }
 
 // Email data interface
@@ -38,7 +58,7 @@ export interface EmailData {
 }
 
 // Build system prompt for AI categorization
-function buildSystemPrompt(rules: CategorizationRule[]): string {
+export function buildSystemPrompt(rules: CategorizationRule[]): string {
   let prompt = `You are an intelligent email categorization assistant. Your job is to analyze incoming emails and suggest appropriate actions based on the user's defined rules.
 
 Available actions:
@@ -53,9 +73,17 @@ User's rules (in priority order):
 `;
 
   rules.forEach((rule, index) => {
-    prompt += `\n${index + 1}. ${rule.name} (${rule.type}, priority: ${rule.priority})`;
+    // Stable positional token. The model echoes this back instead of retyping a
+    // free-text name, which is the identifier it can actually reproduce exactly.
+    prompt += `\n${ruleToken(index)}`;
+    prompt += `\n   Name: ${rule.name}`;
+    prompt += `\n   Priority: ${rule.priority}`;
 
-    if (rule.conditions) {
+    if (!ruleHasConditions(rule)) {
+      prompt += `\n   Matching: judgment only — this rule has no literal conditions. Decide from its Name and AI Instructions below. Nothing else can match it for you.`;
+    }
+
+    if (ruleHasConditions(rule)) {
       prompt += "\n   Conditions:";
       if (rule.conditions.senderEmail?.length) {
         prompt += `\n   - Sender emails: ${rule.conditions.senderEmail.join(", ")}`;
@@ -103,14 +131,23 @@ User's rules (in priority order):
   }
 
   prompt += `\nAnalyze the email and determine which actions should be applied based on the rules above.
-Only apply actions when the email matches at least one rule's conditions.
-If no rule conditions match, return no actions (all booleans false, empty labels) and explain that no rules matched.
+
+How to decide whether a rule matches:
+- A rule that lists Conditions matches only when the email satisfies them.
+- A rule marked "Matching: judgment only" has no conditions to check. It matches when the email fits what its
+  Name and AI Instructions describe. You are the only thing that can match these rules — the absence of
+  conditions is never a reason to say the rule did not match.
+- A rule with both Conditions and AI Instructions matches when the conditions hold and your judgment agrees.
 When multiple rules match, apply actions only from the highest-priority (earliest listed) rule.
 Do not invent labels or actions beyond what the matching rule specifies.
+If genuinely no rule applies, return no actions (all booleans false, empty labels) and explain why.
 
-You MUST set matchedRuleName to the name of the single rule you applied, copied verbatim from the list above.
-Set it to the empty string when no rule matches. Actions are validated against the named rule and silently
-dropped if that rule does not permit them, so naming the wrong rule causes your decision to be discarded.
+You MUST identify the rule you applied in BOTH fields:
+- matchedRuleId: the rule token, e.g. "rule_2" — copy it exactly as written above.
+- matchedRuleName: that same rule's Name, copied verbatim.
+Set both to the empty string only when no rule applies. Actions are validated against the identified rule and
+silently dropped if that rule does not permit them, so failing to identify the rule discards your entire
+decision — including any labels you asked for.
 
 IMPORTANT - Financial Document Detection (always-on, independent of rules):
 You MUST always analyze whether the email is a financial document (invoice, receipt, bank statement, credit card statement, tax document, or payment confirmation). Set isFinancialDocument, financialDocumentType, and financialDocumentDescription accordingly.
@@ -130,7 +167,11 @@ function extractSenderDetails(from: string) {
   return { senderEmail, senderDomain };
 }
 
-function ruleHasConditions(rule: CategorizationRule) {
+type RuleWithConditions = CategorizationRule & {
+  conditions: NonNullable<CategorizationRule["conditions"]>;
+};
+
+function ruleHasConditions(rule: CategorizationRule): rule is RuleWithConditions {
   const conditions = rule.conditions;
   if (!conditions) return false;
 
@@ -204,16 +245,90 @@ export function findMatchingRule(
   return null;
 }
 
+export function ruleToken(index: number): string {
+  return `rule_${index + 1}`;
+}
+
+// Resolve the rule token the model reported. Positional, so it survives any
+// rule name the model would otherwise have to retype character for character.
+export function findRuleById(
+  id: string | undefined,
+  rules: CategorizationRule[]
+): CategorizationRule | null {
+  const raw = id?.trim();
+  if (!raw) return null;
+
+  // Accept a real ruleId too, in case the model quotes one from elsewhere.
+  const byRuleId = rules.find((rule) => rule.ruleId === raw);
+  if (byRuleId) return byRuleId;
+
+  const match = raw.match(/^\[?rule[_\s-]?(\d+)\]?$/i) ?? raw.match(/^(\d+)$/);
+  if (!match) return null;
+
+  return rules[Number(match[1]) - 1] ?? null;
+}
+
+// Strip the decoration a model tends to add around a name it is copying: list
+// numbering, the rule token, surrounding quotes, a trailing type/priority
+// parenthetical. Without this, "1. Cold Outreach" fails to resolve and the whole
+// categorization is discarded.
+function normalizeRuleName(value: string): string {
+  return value
+    .trim()
+    .replace(/^\[?rule[_\s-]?\d+\]?\s*[:.)-]*\s*/i, "")
+    .replace(/^\d+\s*[.)]\s*/, "")
+    .replace(/\s*\((?:AI|condition|hybrid)\b[^)]*\)\s*$/i, "")
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .trim()
+    .toLowerCase();
+}
+
 // Resolve the rule name the model reported back to a real rule. Returns null for
 // an empty name or a hallucinated one, which collapses to "no rule matched".
 export function findRuleByName(
   name: string | undefined,
   rules: CategorizationRule[]
 ): CategorizationRule | null {
-  const normalized = name?.trim().toLowerCase();
+  const normalized = normalizeRuleName(name ?? "");
   if (!normalized) return null;
 
-  return rules.find((rule) => rule.name.trim().toLowerCase() === normalized) ?? null;
+  const exact = rules.find((rule) => normalizeRuleName(rule.name) === normalized);
+  if (exact) return exact;
+
+  // Last resort: an unambiguous containment match, so "Cold Outreach" still
+  // resolves to "Cold Outreach (auto-archive)". Short names are excluded because
+  // they collide with unrelated rules far too easily.
+  if (normalized.length < 4) return null;
+
+  const candidates = rules.filter((rule) => {
+    const ruleName = normalizeRuleName(rule.name);
+    if (ruleName.length < 4) return false;
+    return ruleName.includes(normalized) || normalized.includes(ruleName);
+  });
+
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+// Recovery path for the case this whole layer keeps getting wrong: the model
+// clearly decided (it asked for a label that only one rule defines) but failed
+// to identify the rule. The labels were already constrained to rule-defined ones
+// by the prompt, so owning a suggested label is a real signal of intent — and
+// the recovered rule still clamps the actions, so this can never grant more than
+// the rule itself permits. Rules arrive in priority order; the first owner wins.
+export function findRuleBySuggestedLabels(
+  labels: string[] | undefined,
+  rules: CategorizationRule[]
+): CategorizationRule | null {
+  const wanted = new Set(
+    (labels ?? []).map((label) => label.trim().toLowerCase()).filter(Boolean)
+  );
+  if (wanted.size === 0) return null;
+
+  return (
+    rules.find((rule) =>
+      rule.actions.applyLabels?.some((label) => wanted.has(label.trim().toLowerCase()))
+    ) ?? null
+  );
 }
 
 // Rules arrive sorted ascending by priority, so the lower index is higher priority.
@@ -234,8 +349,18 @@ export function pickHigherPriority(
 export function applyRuleConstraints(
   categorization: CategorizationResult,
   matchedRule: CategorizationRule | null
-): CategorizationResult {
+): CategorizationOutcome {
+  const declaredLabels = categorization.suggestedLabels ?? [];
+
   if (!matchedRule) {
+    // Say which rule the model claimed, if any. "No rule matched" on its own
+    // reads as "the model saw nothing here", which is the opposite of what
+    // happened when it named a rule that failed to resolve.
+    const claimed = categorization.matchedRuleName?.trim();
+    const prefix = claimed
+      ? `No rule matched (the model named "${claimed}", which is not one of your rules)`
+      : "No rule matched";
+
     return {
       ...categorization,
       shouldMarkImportant: false,
@@ -244,29 +369,38 @@ export function applyRuleConstraints(
       shouldMarkReadAndLabel: false,
       shouldBlockAndUnsubscribe: false,
       suggestedLabels: [],
+      matchedRuleId: "",
       matchedRuleName: "",
+      declaredLabels,
+      droppedLabels: declaredLabels,
       reasoning: categorization.reasoning
-        ? `No rule matched: ${categorization.reasoning}`
-        : "No rule matched",
+        ? `${prefix}: ${categorization.reasoning}`
+        : prefix,
     };
   }
 
   // Map lowercased label -> the rule's canonical spelling, so a case variant from
   // the model resolves to the existing Gmail label instead of creating a new one.
   const allowedLabels = new Map(
-    matchedRule.actions.applyLabels?.map((label) => [label.toLowerCase(), label]) ?? []
+    matchedRule.actions.applyLabels?.map((label) => [label.trim().toLowerCase(), label]) ?? []
   );
 
   const suggestedLabels = [
     ...new Set(
-      categorization.suggestedLabels
-        .map((label) => allowedLabels.get(label.toLowerCase()))
+      declaredLabels
+        .map((label) => allowedLabels.get(label.trim().toLowerCase()))
         .filter((label): label is string => label !== undefined)
     ),
   ];
 
+  const droppedLabels = declaredLabels.filter(
+    (label) => !allowedLabels.has(label.trim().toLowerCase())
+  );
+
   return {
     ...categorization,
+    declaredLabels,
+    droppedLabels,
     shouldMarkImportant:
       Boolean(categorization.shouldMarkImportant) &&
       Boolean(matchedRule.actions.markImportant),
@@ -283,10 +417,55 @@ export function applyRuleConstraints(
       Boolean(categorization.shouldBlockAndUnsubscribe) &&
       Boolean(matchedRule.actions.blockAndUnsubscribe),
     suggestedLabels,
+    matchedRuleId: matchedRule.ruleId,
     matchedRuleName: matchedRule.name,
     reasoning: matchedRule.name
       ? `Matched rule: ${matchedRule.name} — ${categorization.reasoning}`
       : categorization.reasoning,
+  };
+}
+
+// Turn a raw model result into a clamped outcome, recording how the rule was
+// found. Four independent routes, tried strongest first:
+//   1. hard conditions evaluated locally — deterministic, never involves the model
+//   2. the rule token the model echoed back
+//   3. the rule name the model wrote out
+//   4. the rule that owns the labels the model asked for
+// Routes 2-4 are the only way a condition-less AI rule can ever fire. Every route
+// ends in applyRuleConstraints, so the model can never exceed what the rule allows.
+export function resolveOutcome(
+  email: EmailData,
+  result: CategorizationResult,
+  enabledRules: CategorizationRule[]
+): CategorizationOutcome {
+  const conditionMatch = findMatchingRule(email, enabledRules);
+
+  const idMatch = findRuleById(result.matchedRuleId, enabledRules);
+  const nameMatch = findRuleByName(result.matchedRuleName, enabledRules);
+  const declaredMatch = idMatch ?? nameMatch;
+
+  // Whichever of conditions/declaration is higher priority wins; enabledRules is
+  // sorted ascending by priority, so the earlier index is the stronger claim.
+  let matchedRule = pickHigherPriority(conditionMatch, declaredMatch, enabledRules);
+  let resolvedVia: RuleResolution = "unresolved";
+
+  if (matchedRule && matchedRule === conditionMatch) {
+    resolvedVia = "conditions";
+  } else if (matchedRule) {
+    resolvedVia = matchedRule === idMatch ? "rule_id" : "rule_name";
+  } else {
+    const labelMatch = findRuleBySuggestedLabels(result.suggestedLabels, enabledRules);
+    if (labelMatch) {
+      matchedRule = labelMatch;
+      resolvedVia = "labels";
+    }
+  }
+
+  return {
+    ...applyRuleConstraints(result, matchedRule),
+    declaredRuleId: result.matchedRuleId ?? "",
+    declaredRuleName: result.matchedRuleName ?? "",
+    ruleResolution: resolvedVia,
   };
 }
 
@@ -310,9 +489,11 @@ export async function categorizeEmail(
       isFinancialDocument: false,
       financialDocumentType: "none",
       financialDocumentDescription: "",
+      matchedRuleId: "",
       matchedRuleName: "",
       reasoning: "No active rules configured",
       confidence: 1.0,
+      ruleResolution: "unresolved",
     };
   }
 
@@ -340,17 +521,7 @@ Based on the rules, what actions should be applied to this email?`;
       temperature: 0.3,
     });
 
-    // Two independent ways a rule can be selected: hard conditions evaluated here,
-    // and the rule the model says it applied (the only route for condition-less
-    // rules). Whichever is higher priority wins; enabledRules is sorted ascending
-    // by priority, so the earlier index is the stronger claim. Either way the
-    // result is clamped by applyRuleConstraints — the model never decides alone.
-    const conditionMatch = findMatchingRule(email, enabledRules);
-    const declaredMatch = findRuleByName(result.object.matchedRuleName, enabledRules);
-
-    const matchedRule = pickHigherPriority(conditionMatch, declaredMatch, enabledRules);
-
-    return applyRuleConstraints(result.object, matchedRule);
+    return resolveOutcome(email, result.object, enabledRules);
   } catch (error) {
     console.error("Error categorizing email with AI:", error);
 
@@ -369,8 +540,8 @@ Based on the rules, what actions should be applied to this email?`;
 function fallbackCategorization(
   email: EmailData,
   rules: CategorizationRule[]
-): CategorizationResult {
-  const result: CategorizationResult = {
+): CategorizationOutcome {
+  const result: CategorizationOutcome = {
     shouldMarkImportant: false,
     shouldPinConversation: false,
     shouldSkipInbox: false,
@@ -380,6 +551,7 @@ function fallbackCategorization(
     isFinancialDocument: false,
     financialDocumentType: "none",
     financialDocumentDescription: "",
+    matchedRuleId: "",
     matchedRuleName: "",
     reasoning: "Rule-based categorization (AI unavailable)",
     confidence: 0.7,
@@ -388,9 +560,13 @@ function fallbackCategorization(
   const matchedRule = findMatchingRule(email, rules);
 
   if (!matchedRule) {
+    // Condition-less AI rules cannot be evaluated without the model, so this is
+    // "we could not check", not "nothing applies".
     result.reasoning = "No rule conditions matched (AI unavailable)";
     result.confidence = 1.0;
+    result.ruleResolution = "unresolved";
   } else {
+    result.ruleResolution = "conditions";
     if (matchedRule.actions.markImportant) {
       result.shouldMarkImportant = true;
     }
@@ -409,6 +585,7 @@ function fallbackCategorization(
     if (matchedRule.actions.applyLabels?.length) {
       result.suggestedLabels.push(...matchedRule.actions.applyLabels);
     }
+    result.matchedRuleId = matchedRule.ruleId;
     result.matchedRuleName = matchedRule.name;
     result.reasoning = `Matched rule: ${matchedRule.name} (AI unavailable)`;
     result.suggestedLabels = [...new Set(result.suggestedLabels)];

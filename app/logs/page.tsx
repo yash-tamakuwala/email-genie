@@ -83,6 +83,21 @@ export default function LogsPage() {
     }
   };
 
+  // The model decided something and the rule layer threw it away. Worth calling
+  // out: the email looks untouched in Gmail while the reasoning says otherwise.
+  const droppedDecision = (data: {
+    ruleResolution?: string;
+    droppedLabels?: string[];
+    declaredRuleName?: string;
+  } | null) => {
+    if (!data || data.ruleResolution !== "unresolved") return null;
+    if (!data.droppedLabels?.length) return null;
+
+    return data.declaredRuleName
+      ? `The AI asked for ${data.droppedLabels.join(", ")} under a rule named "${data.declaredRuleName}", which no longer matches any of your rules — nothing was applied.`
+      : `The AI asked for ${data.droppedLabels.join(", ")} but did not identify a rule that allows it — nothing was applied.`;
+  };
+
   const getActionBadgeVariant = (action: string) => {
     if (action.includes("important")) return "default";
     if (action.includes("archived")) return "secondary";
@@ -213,7 +228,13 @@ export default function LogsPage() {
                           Reason: {log.ruleMatched}
                         </p>
                       )}
-                      
+
+                      {droppedDecision(categorizationData) && (
+                        <p className="text-xs text-amber-700 dark:text-amber-400">
+                          ⚠ {droppedDecision(categorizationData)}
+                        </p>
+                      )}
+
                       {categorizationData && (
                         <div className="text-xs text-gray-500 mt-2">
                           <div>Important: {categorizationData.shouldMarkImportant ? "Yes" : "No"}</div>
@@ -282,6 +303,14 @@ export default function LogsPage() {
                     {selectedLog.ruleMatched}
                   </p>
                 </div>
+              )}
+
+              {droppedDecision(parseCategorizationData(selectedLog)) && (
+                <Alert className="bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800">
+                  <AlertDescription className="text-amber-800 dark:text-amber-200 text-sm">
+                    {droppedDecision(parseCategorizationData(selectedLog))}
+                  </AlertDescription>
+                </Alert>
               )}
               
               {selectedLog.categorization && (
