@@ -2,19 +2,27 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { CategorizationRule } from "./dynamodb";
 
-// Define the categorization result schema
+// Define the categorization result schema.
+//
+// FIELD ORDER IS LOAD-BEARING. Structured output is generated in schema order,
+// so any field placed before `reasoning` is decided before the model has
+// articulated why. With the decision fields first, the model emitted all-false
+// booleans and an empty matchedRuleName while its own reasoning said the email
+// "should be archived and labeled as 'Cold Outreach'" — it rationalised after
+// committing. Reasoning and the rule match therefore come FIRST, so the
+// decisions below follow from them rather than the other way round.
 export const CategorizationResultSchema = z.object({
-  shouldMarkImportant: z.boolean().describe("Whether the email should be marked as important/starred"),
-  shouldPinConversation: z.boolean().describe("Whether the conversation should be pinned"),
-  shouldSkipInbox: z.boolean().describe("Whether the email should skip the inbox (be archived)"),
-  shouldMarkReadAndLabel: z.boolean().describe("Whether the email should be marked as read and moved to a label without archiving (keeps it searchable)"),
-  shouldBlockAndUnsubscribe: z.boolean().describe("Whether to block the sender and unsubscribe from their emails"),
-  suggestedLabels: z.array(z.string()).describe("Labels to apply from the user's defined rules only. Do not invent new labels."),
-  matchedRuleName: z.string().describe("The exact name of the single highest-priority rule this email matches, copied verbatim from the rule list. Empty string if no rule matches."),
-  isFinancialDocument: z.boolean().describe("Whether this email contains or is a financial document such as an invoice, receipt, bank statement, credit card statement, tax document, or payment confirmation"),
+  reasoning: z.string().describe("Think first, then decide. Work through which rule (if any) this email matches and why, before filling in any field below. State the rule you are matching on and the specific evidence in the email that satisfies it, or explain why no rule applies. Every field after this one must follow from what you write here."),
+  matchedRuleName: z.string().describe("The exact name of the single highest-priority rule this email matches, copied verbatim from the rule list. Empty string ONLY if no rule matches. If your reasoning above concluded the email matches a rule, you MUST name that rule here — leaving this empty discards the match and the email is left untouched."),
+  shouldMarkImportant: z.boolean().describe("Whether the email should be marked as important/starred. Must be true if the rule named above specifies that action."),
+  shouldPinConversation: z.boolean().describe("Whether the conversation should be pinned. Must be true if the rule named above specifies that action."),
+  shouldSkipInbox: z.boolean().describe("Whether the email should skip the inbox (be archived). Must be true if the rule named above specifies that action."),
+  shouldMarkReadAndLabel: z.boolean().describe("Whether the email should be marked as read and moved to a label without archiving (keeps it searchable). Must be true if the rule named above specifies that action."),
+  shouldBlockAndUnsubscribe: z.boolean().describe("Whether to block the sender and unsubscribe from their emails. Must be true if the rule named above specifies that action."),
+  suggestedLabels: z.array(z.string()).describe("Labels to apply, taken verbatim from the matched rule's own label list. Do not invent new labels. If the rule named above applies labels, list them here."),
+  isFinancialDocument: z.boolean().describe("Whether this email contains or is a financial document such as an invoice, receipt, bank statement, credit card statement, tax document, or payment confirmation. Independent of the rules above."),
   financialDocumentType: z.enum(["invoice", "receipt", "bank_statement", "credit_card_statement", "tax_document", "payment_confirmation", "none"]).describe("The type of financial document, or 'none' if not a financial document"),
   financialDocumentDescription: z.string().describe("A one-line human-readable description of the financial document including vendor/bank name, document type, date, and identifying details like card ending or account number. Empty string if not a financial document. Example: 'HDFC Bank credit card statement dated March 2026 for card ending 4521'"),
-  reasoning: z.string().describe("Brief explanation of the categorization decision"),
   confidence: z.number().min(0).max(1).describe("Confidence score of the categorization (0-1)"),
 });
 
@@ -108,9 +116,15 @@ If no rule conditions match, return no actions (all booleans false, empty labels
 When multiple rules match, apply actions only from the highest-priority (earliest listed) rule.
 Do not invent labels or actions beyond what the matching rule specifies.
 
-You MUST set matchedRuleName to the name of the single rule you applied, copied verbatim from the list above.
-Set it to the empty string when no rule matches. Actions are validated against the named rule and silently
-dropped if that rule does not permit them, so naming the wrong rule causes your decision to be discarded.
+ANSWER IN FIELD ORDER — reasoning first, then the decisions that follow from it:
+1. reasoning: work out which rule the email matches and cite the evidence, or explain why none applies.
+2. matchedRuleName: the name of that rule, copied verbatim from the list above. Empty string ONLY if no rule matches.
+3. The action fields and labels: set them to what the rule named in step 2 specifies.
+
+These three must agree. If your reasoning concludes the email is, say, a cold outreach pitch that should be
+archived and labelled, then matchedRuleName must be that rule and the corresponding action fields must be true.
+Reasoning that a rule applies while leaving matchedRuleName empty or the actions false is a contradiction and
+results in the email being left untouched.
 
 IMPORTANT - Financial Document Detection (always-on, independent of rules):
 You MUST always analyze whether the email is a financial document (invoice, receipt, bank statement, credit card statement, tax document, or payment confirmation). Set isFinancialDocument, financialDocumentType, and financialDocumentDescription accordingly.
