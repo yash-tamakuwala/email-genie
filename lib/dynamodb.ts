@@ -501,6 +501,40 @@ export async function listEmailLogs(accountId: string, date?: string): Promise<E
   return (result.Items as EmailLog[]) || [];
 }
 
+// Message IDs already logged for an account, so the poller does not re-categorize
+// them. pollAccountForEmails deliberately re-fetches a 30s overlap window to avoid
+// missing edge cases, which at a 2-minute cadence means ~25% of messages come back
+// a second time. Projects only messageId to keep this cheap enough to run every cycle.
+export async function listProcessedMessageIds(
+  accountId: string,
+  days: number = 2
+): Promise<Set<string>> {
+  const ids = new Set<string>();
+  const today = new Date();
+
+  for (let i = 0; i < days; i++) {
+    const date = new Date(today);
+    date.setDate(date.getDate() - i);
+    const dateStr = date.toISOString().split("T")[0];
+
+    const result = await dynamoDb.send(
+      new QueryCommand({
+        TableName: TABLES.EMAIL_LOGS,
+        KeyConditionExpression: "pk = :pk",
+        ExpressionAttributeValues: { ":pk": `ACCOUNT#${accountId}#${dateStr}` },
+        ProjectionExpression: "messageId",
+      })
+    );
+
+    for (const item of result.Items ?? []) {
+      const messageId = (item as { messageId?: string }).messageId;
+      if (messageId) ids.add(messageId);
+    }
+  }
+
+  return ids;
+}
+
 export async function getRecentEmailLogs(accountId: string, days: number = 7): Promise<EmailLog[]> {
   const logs: EmailLog[] = [];
   const today = new Date();

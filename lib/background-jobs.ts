@@ -6,6 +6,7 @@ import {
   setJobStatus,
   createBlockedSender,
   getBlockedSender,
+  listProcessedMessageIds,
   markAccountSyncErrorNotified,
   recordAccountSyncError,
   clearAccountSyncError,
@@ -51,6 +52,7 @@ export async function runEmailProcessingJob(): Promise<JobRunSummary> {
   let processedCount = 0;
   let errorCount = 0;
   let aiFailureCount = 0;
+  let skippedCount = 0;
 
   try {
     const accounts = await listGmailAccounts(SINGLE_USER_ID);
@@ -69,8 +71,18 @@ export async function runEmailProcessingJob(): Promise<JobRunSummary> {
         }
 
         const rules = await listCategorizationRules(SINGLE_USER_ID, account.accountId);
+        const alreadyProcessed = await listProcessedMessageIds(account.accountId);
 
         for (const email of emails) {
+          // The poller's overlap window re-delivers recent messages, so without
+          // this every message in that window is categorized twice — a second AI
+          // call and a second set of Gmail mutations for no benefit.
+          if (alreadyProcessed.has(email.messageId)) {
+            skippedCount += 1;
+            continue;
+          }
+          alreadyProcessed.add(email.messageId);
+
           try {
             const categorization = await categorizeEmail(
               {
@@ -286,7 +298,8 @@ export async function runEmailProcessingJob(): Promise<JobRunSummary> {
     const status = errorCount > 0 || aiFailureCount > 0 ? "partial" : "success";
     const message =
       `Processed ${processedCount} emails with ${errorCount} errors` +
-      (aiFailureCount > 0 ? `, ${aiFailureCount} AI failures` : "");
+      (aiFailureCount > 0 ? `, ${aiFailureCount} AI failures` : "") +
+      (skippedCount > 0 ? `, ${skippedCount} already-seen skipped` : "");
 
     await setJobStatus({
       lastRunAt: finishedAt,
