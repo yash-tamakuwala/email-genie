@@ -198,6 +198,19 @@ export async function listGmailAccounts(userId: string): Promise<GmailAccount[]>
   return (result.Items as GmailAccount[]) || [];
 }
 
+// Find an existing account for this user by email (case-insensitive), so a
+// reconnect (e.g. after a password change invalidates tokens) can update the
+// same accountId in place instead of minting a new one and orphaning any
+// CategorizationRule.accountIds that reference the original account.
+export async function findGmailAccountByEmail(
+  userId: string,
+  email: string
+): Promise<GmailAccount | null> {
+  const accounts = await listGmailAccounts(userId);
+  const normalized = email.toLowerCase();
+  return accounts.find((account) => account.email.toLowerCase() === normalized) || null;
+}
+
 export async function updateGmailAccountTokens(
   userId: string,
   accountId: string,

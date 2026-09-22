@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getTokensFromCode, getUserEmail } from "@/lib/gmail";
-import { createGmailAccount } from "@/lib/dynamodb";
+import {
+  createGmailAccount,
+  findGmailAccountByEmail,
+  updateGmailAccountTokens,
+  clearAccountSyncError,
+} from "@/lib/dynamodb";
 import { generateAccountId, verifyOAuthState, SINGLE_USER_ID } from "@/lib/auth";
 import { cookies } from "next/headers";
 
@@ -49,20 +54,35 @@ export async function GET(request: NextRequest) {
     // Calculate token expiry (expiry_date is an absolute timestamp when present)
     const expiryTime = tokens.expiry_date ?? Date.now() + 3600 * 1000;
     
-    // Store account in database
-    const accountId = generateAccountId();
-    await createGmailAccount({
-      accountId,
-      userId: SINGLE_USER_ID,
-      email,
-      accessToken: tokens.access_token,
-      refreshToken: tokens.refresh_token,
-      tokenExpiry: expiryTime,
-    });
-    
+    // Reuse the existing account (and accountId) for this email if one is
+    // already stored, so reconnecting after a token/password invalidation
+    // doesn't orphan CategorizationRule.accountIds pointing at the old account.
+    const existingAccount = await findGmailAccountByEmail(SINGLE_USER_ID, email);
+
+    if (existingAccount) {
+      await updateGmailAccountTokens(
+        SINGLE_USER_ID,
+        existingAccount.accountId,
+        tokens.access_token,
+        tokens.refresh_token,
+        expiryTime
+      );
+      await clearAccountSyncError(SINGLE_USER_ID, existingAccount.accountId);
+    } else {
+      const accountId = generateAccountId();
+      await createGmailAccount({
+        accountId,
+        userId: SINGLE_USER_ID,
+        email,
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token,
+        tokenExpiry: expiryTime,
+      });
+    }
+
     // Clear OAuth state cookie
     const response = NextResponse.redirect(
-      new URL("/dashboard?connected=true", request.url)
+      new URL(`/dashboard?connected=true${existingAccount ? "&reconnected=true" : ""}`, request.url)
     );
     response.cookies.delete("oauth_state");
     

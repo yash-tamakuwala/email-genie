@@ -280,6 +280,7 @@ export default function GlobalRulesPage() {
             </CardHeader>
             <CardContent>
               <RuleBuilder
+                key={editingRule?.ruleId ?? "new"}
                 accounts={accounts}
                 initialRule={editingRule || templateData || undefined}
                 onSave={handleSaveRule}

@@ -20,8 +20,10 @@ function DashboardContent() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [reconnecting, setReconnecting] = useState<string | null>(null);
   const searchParams = useSearchParams();
   const connected = searchParams.get("connected");
+  const reconnected = searchParams.get("reconnected");
 
   useEffect(() => {
     fetchAccounts();
@@ -43,6 +45,27 @@ function DashboardContent() {
       setError(message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleReconnectAccount = async (accountId: string) => {
+    try {
+      setReconnecting(accountId);
+      const response = await fetch("/api/gmail/connect");
+      const data = await response.json();
+
+      if (data.success && data.authUrl) {
+        // The OAuth callback matches by email and updates this same account
+        // in place, so rules linked to this accountId are preserved.
+        window.location.href = data.authUrl;
+      } else {
+        alert(`Error: ${data.error || "Failed to start reconnect"}`);
+        setReconnecting(null);
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      alert(`Error: ${message}`);
+      setReconnecting(null);
     }
   };
 
@@ -88,7 +111,9 @@ function DashboardContent() {
         {connected && (
           <Alert className="mb-6 bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800">
             <AlertDescription className="text-green-800 dark:text-green-200">
-              ✓ Gmail account connected successfully!
+              {reconnected
+                ? "✓ Gmail account reconnected — your existing rules still apply."
+                : "✓ Gmail account connected successfully!"}
             </AlertDescription>
           </Alert>
         )}
@@ -143,6 +168,14 @@ function DashboardContent() {
                             Manage Rules
                           </Button>
                         </Link>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={reconnecting === account.accountId}
+                          onClick={() => handleReconnectAccount(account.accountId)}
+                        >
+                          {reconnecting === account.accountId ? "Reconnecting..." : "Reconnect"}
+                        </Button>
                         <Button
                           size="sm"
                           variant="destructive"
